@@ -20,15 +20,21 @@
 #
 # Options:
 #   --apply             Actually delete orphans (default is dry-run).
+#   --report-size       Query the _status API for the identified orphans and
+#                       report how much repository storage they occupy (and how
+#                       much would be reclaimed by deleting them). Read-only.
 #   --repo NAME         Snapshot repository (default: found-snapshots).
 #   --pattern GLOB      Only consider orphans whose snapshot name matches this
 #                       shell glob (e.g. '2023.*'). Default: '*' (all).
-#   --batch N           Delete N snapshots per DELETE request (default: 50).
+#   --batch N           Batch size for DELETE and _status requests (default: 50).
 #   -h | --help         Show this help.
 #
 # Examples:
 #   # See every orphan in the repo (safe, no changes):
 #   ES_URL=... ES_API_KEY=... ./cleanup_orphaned_searchable_snapshots.sh
+#
+#   # See the orphans AND how much storage they occupy (still read-only):
+#   ES_URL=... ES_API_KEY=... ./cleanup_orphaned_searchable_snapshots.sh --report-size
 #
 #   # Delete only orphaned snapshots taken in 2023:
 #   ES_URL=... ES_API_KEY=... ./cleanup_orphaned_searchable_snapshots.sh --pattern '2023.*' --apply
@@ -38,18 +44,20 @@ set -euo pipefail
 
 REPO="found-snapshots"
 APPLY=0
+REPORT_SIZE=0
 PATTERN="*"
 BATCH=50
 
-usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --apply)   APPLY=1; shift ;;
-    --repo)    REPO="$2"; shift 2 ;;
-    --pattern) PATTERN="$2"; shift 2 ;;
-    --batch)   BATCH="$2"; shift 2 ;;
-    -h|--help) usage 0 ;;
+    --apply)       APPLY=1; shift ;;
+    --report-size) REPORT_SIZE=1; shift ;;
+    --repo)        REPO="$2"; shift 2 ;;
+    --pattern)     PATTERN="$2"; shift 2 ;;
+    --batch)       BATCH="$2"; shift 2 ;;
+    -h|--help)     usage 0 ;;
     *) echo "Unknown option: $1" >&2; usage 1 ;;
   esac
 done
@@ -74,10 +82,21 @@ req() {
   curl -sS --fail-with-body "${AUTH[@]}" -X "$method" "${ES_URL}${path}" "$@"
 }
 
+humanize() {
+  # humanize BYTES -> human-readable (e.g. 1.50 GiB)
+  jq -rn --argjson b "${1:-0}" '
+    def h: if   . >= 1024*1024*1024*1024 then "\((./1024/1024/1024/1024*100|round/100)) TiB"
+           elif . >= 1024*1024*1024      then "\((./1024/1024/1024*100|round/100)) GiB"
+           elif . >= 1024*1024           then "\((./1024/1024*100|round/100)) MiB"
+           elif . >= 1024                then "\((./1024*100|round/100)) KiB"
+           else "\(.) B" end;
+    $b | h'
+}
+
 echo "Cluster : ${ES_URL}"
 echo "Repo    : ${REPO}"
 echo "Pattern : ${PATTERN}"
-echo "Mode    : $([[ $APPLY -eq 1 ]] && echo APPLY || echo DRY-RUN)"
+echo "Mode    : $([[ $APPLY -eq 1 ]] && echo APPLY || echo DRY-RUN)$([[ $REPORT_SIZE -eq 1 ]] && echo ' +report-size')"
 echo
 
 # 1) Snapshots currently IN USE = referenced by a mounted searchable-snapshot index.
@@ -118,6 +137,43 @@ if [[ ${#ORPHANS[@]} -eq 0 ]]; then
   exit 0
 fi
 printf '  %s\n' "${ORPHANS[@]}"
+
+# 3b) Optional: report the repository storage occupied by these orphans.
+#     Uses the _status API (per snapshot: stats.total + stats.incremental).
+#       - total       = full logical size of the snapshot.
+#       - incremental = bytes this snapshot uniquely added to the repo (dedup-aware);
+#                       this is the best estimate of what deletion actually reclaims.
+#     NOTE: _status is a heavy, blocking call -- it is issued in batches.
+if [[ $REPORT_SIZE -eq 1 ]]; then
+  echo
+  echo "Querying _status for ${#ORPHANS[@]} orphan(s) in batches of ${BATCH} to compute size..."
+  total_bytes=0
+  incr_bytes=0
+  counted=0
+  for ((i=0; i<${#ORPHANS[@]}; i+=BATCH)); do
+    chunk=("${ORPHANS[@]:i:BATCH}")
+    csv="$(IFS=,; echo "${chunk[*]}")"
+    status_json="$(req GET "/_snapshot/${REPO}/${csv}/_status?ignore_unavailable=true")"
+    read -r bt bi bc < <(printf '%s' "$status_json" | jq -r '
+      [ .snapshots[]?.stats ] as $s
+      | ( [ $s[].total.size_in_bytes ]       | add // 0 ) as $t
+      | ( [ $s[].incremental.size_in_bytes ] | add // 0 ) as $inc
+      | "\($t) \($inc) \(($s|length))"')
+    total_bytes=$((total_bytes + bt))
+    incr_bytes=$((incr_bytes + bi))
+    counted=$((counted + bc))
+    echo "  ...processed $((i + ${#chunk[@]}))/${#ORPHANS[@]}"
+  done
+  echo
+  echo "==================== ORPHANED SNAPSHOT STORAGE ===================="
+  echo "  snapshots measured        : ${counted}/${#ORPHANS[@]}"
+  echo "  total (logical) size      : $(humanize "$total_bytes")   (${total_bytes} bytes)"
+  echo "  incremental (reclaimable) : $(humanize "$incr_bytes")   (${incr_bytes} bytes)"
+  echo "=================================================================="
+  echo "  'incremental' is the dedup-aware estimate of space freed by deleting"
+  echo "  these snapshots. For the exact repository bill, also check the backing"
+  echo "  object-storage bucket metrics (S3/GCS/Azure)."
+fi
 
 if [[ $APPLY -ne 1 ]]; then
   echo

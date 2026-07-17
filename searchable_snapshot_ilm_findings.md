@@ -64,5 +64,23 @@ present-day misconfiguration. They require manual snapshot cleanup, e.g.:
 
 - `cleanup_orphaned_searchable_snapshots.sh` -- finds/deletes searchable snapshots in
   `found-snapshots` that are no longer referenced by any mounted index. DRY-RUN by
-  default; pass `--apply` to delete, `--pattern '2023.*'` to scope by name. See the header
-  comment for usage and required env vars (`ES_URL`, `ES_API_KEY` or `ES_USER`/`ES_PASS`).
+  default; pass `--apply` to delete, `--pattern '2023.*'` to scope by name, and
+  `--report-size` to report how much repository storage the orphans occupy (read-only).
+  See the header comment for usage and required env vars (`ES_URL`, `ES_API_KEY` or
+  `ES_USER`/`ES_PASS`).
+
+- `orphaned_snapshot_size_report.py` -- standalone, read-only report of the total
+  repository storage occupied by ONLY the orphaned searchable snapshots. Sums both the
+  logical (`total`) and dedup-aware (`incremental`, i.e. reclaimable) sizes via the
+  `_status` API. Supports `--pattern`, `--per-snapshot`, and `--json`. Same env vars as
+  the cleanup script; standard library only.
+
+## Measuring how much storage the orphans use
+
+Snapshots are incremental/deduplicated, so summing per-snapshot sizes naively overcounts
+shared blobs. Use these instead:
+
+- `incremental.size_in_bytes` (per snapshot, from `_status`) = dedup-aware estimate of what
+  deleting that snapshot actually frees. Both tools above report this.
+- For the exact repository bill, check the backing object-storage bucket metrics
+  (S3 `BucketSizeBytes`, or the GCS/Azure equivalent) for the deployment's repo path.
