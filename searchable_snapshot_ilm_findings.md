@@ -48,3 +48,21 @@ present-day misconfiguration. They require manual snapshot cleanup, e.g.:
    `solarwinds-test` (DEV) and `cost` (PROD).
 2. Clean up the backlog: manually delete the already-orphaned snapshots; no policy change
    removes snapshots already detached from a live index.
+
+## Deliverables in this branch
+
+- `corrected_ilm_policies/solarwinds-test.json` and `corrected_ilm_policies/cost.json` --
+  ready-to-apply `PUT _ilm/policy` bodies. They keep each policy's existing hot/frozen
+  phases and add a `delete` phase with `delete_searchable_snapshot: true`.
+  - Apply with (adjust host/auth):
+    - DEV:  `PUT _ilm/policy/solarwinds-test`  (body = solarwinds-test.json)
+    - PROD: `PUT _ilm/policy/cost`             (body = cost.json)
+  - **IMPORTANT:** the delete phase `min_age` is set to a placeholder of `365d`. `min_age`
+    is measured from index rollover and controls when the index (and its searchable
+    snapshot) is deleted. Set this to your actual retention requirement before applying --
+    too small a value deletes data early.
+
+- `cleanup_orphaned_searchable_snapshots.sh` -- finds/deletes searchable snapshots in
+  `found-snapshots` that are no longer referenced by any mounted index. DRY-RUN by
+  default; pass `--apply` to delete, `--pattern '2023.*'` to scope by name. See the header
+  comment for usage and required env vars (`ES_URL`, `ES_API_KEY` or `ES_USER`/`ES_PASS`).
