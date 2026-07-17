@@ -29,33 +29,58 @@ The script **never deletes anything**. It only measures. To actually remove orph
 
 ## 2. Requirements
 
-- **Python 3.7+** — standard library only, nothing to `pip install`.
+- **Python 3.7+.**
+- **For `--cluster` (recommended):** either **boto3** installed, or the **`aws` CLI**
+  available, plus AWS credentials with `secretsmanager:GetSecretValue` on the relevant
+  secret. The script prefers boto3 and falls back to the `aws` CLI automatically.
 - Network access to the Elasticsearch endpoint.
-- Credentials that can call `_snapshot`, `_settings`, and `_status` (a monitoring/admin
-  role, or superuser).
+- An API key that can call `_snapshot`, `_settings`, and `_status` (a monitoring role is
+  enough — `cluster: [monitor]` + `view_index_metadata`).
+
+> Authentication is **API key only** — basic auth (`--es-user`/`--es-pass`) is not
+> supported.
 
 ---
 
 ## 3. Providing connection details
 
-You can pass the endpoint and credentials **either as command-line arguments or as
-environment variables**. CLI arguments win when both are set.
+The script needs an **Elasticsearch endpoint** (`es_url`) and an **API key**
+(`es_api_key`). It resolves each of them in this order (first match wins):
 
-| CLI argument | Environment variable | Meaning |
-|--------------|----------------------|---------|
-| `--es-url`   | `ES_URL`             | Elasticsearch endpoint, e.g. `https://host:9243` |
-| `--api-key`  | `ES_API_KEY`         | API key ("encoded" value) |
-| `--es-user`  | `ES_USER`            | Basic-auth username (alternative to API key) |
-| `--es-pass`  | `ES_PASS`            | Basic-auth password |
+1. Explicit `--es-url` / `--api-key` flags
+2. **AWS Secrets Manager** (when `--cluster` or `--secret-name` is given)
+3. Environment variables `ES_URL` / `ES_API_KEY`
 
-Use **either** an API key **or** a username/password pair.
+### Recommended: AWS Secrets Manager via `--cluster`
 
-> **Security note:** secrets passed as CLI arguments can show up in your shell history and
-> in the process list (`ps`). For anything beyond a quick test, prefer the environment
-> variables, and consider `export HISTCONTROL=ignorespace` (then prefix the command with a
-> space) if you must inline a key.
+Credentials live in AWS Secrets Manager (the same secret family used by the Kibana
+duplicate data-view cleanup project). `--cluster <name>` maps to the secret name and pulls
+two keys out of it:
 
-### Getting an API key
+| `--cluster` | AWS secret name | keys used |
+|-------------|-----------------|-----------|
+| `dev`  | `elastic/kibana/dataview_cleanup_dev`  | `es_url`, `es_api_key` |
+| `qa`   | `elastic/kibana/dataview_cleanup_qa`   | `es_url`, `es_api_key` |
+| `ccs`  | `elastic/kibana/dataview_cleanup_ccs`  | `es_url`, `es_api_key` |
+| `prod` | `elastic/kibana/dataview_cleanup_prod` | `es_url`, `es_api_key` |
+
+The secret must be a JSON document containing at least:
+
+```json
+{
+  "es_url": "https://my-deployment.es.us-east-1.aws.found.io:9243",
+  "es_api_key": "PASTE_ENCODED_API_KEY"
+}
+```
+
+Other keys in the secret (e.g. `kibana_url`) are ignored. This keeps the endpoint and API
+key **out of your shell history, environment, and the process list** — the script reads
+them straight from Secrets Manager at runtime.
+
+Use `--secret-name` to point at a differently-named secret, and `--region` if the secret
+is not in your default AWS region.
+
+### Getting an API key (to store in the secret)
 
 In Kibana **Dev Tools**:
 
@@ -72,23 +97,28 @@ POST /_security/api_key
 }
 ```
 
-Use the **`encoded`** value from the response as `--api-key` / `ES_API_KEY`.
+Store the **`encoded`** value from the response as `es_api_key` in the cluster's secret.
 
 ---
 
 ## 4. Quick start
 
-Pass everything on the command line:
+Load the endpoint and API key from AWS Secrets Manager for a cluster (recommended):
 
 ```bash
+./orphaned_snapshot_size_report.py --cluster prod
+./orphaned_snapshot_size_report.py --cluster dev --pattern '2023.*'
+```
+
+Or supply them directly / via environment variables:
+
+```bash
+# explicit flags
 ./orphaned_snapshot_size_report.py \
   --es-url https://my-deployment.es.us-east-1.aws.found.io:9243 \
   --api-key "PASTE_ENCODED_API_KEY"
-```
 
-Or use environment variables (unchanged, still supported):
-
-```bash
+# environment variables
 export ES_URL="https://my-deployment.es.us-east-1.aws.found.io:9243"
 export ES_API_KEY="PASTE_ENCODED_API_KEY"
 ./orphaned_snapshot_size_report.py
@@ -115,10 +145,11 @@ Example output:
 
 | Option | Default | Purpose |
 |--------|---------|---------|
-| `--es-url URL` | — | Endpoint (overrides `ES_URL`) |
-| `--api-key KEY` | — | API key (overrides `ES_API_KEY`) |
-| `--es-user USER` | — | Basic-auth username (overrides `ES_USER`) |
-| `--es-pass PASS` | — | Basic-auth password (overrides `ES_PASS`) |
+| `--cluster {dev,qa,ccs,prod}` | — | Load `es_url`/`es_api_key` from AWS secret `elastic/kibana/dataview_cleanup_<cluster>` |
+| `--secret-name NAME` | — | Override the derived AWS secret name |
+| `--region NAME` | — | AWS region for Secrets Manager (else default chain) |
+| `--es-url URL` | — | Endpoint (overrides secret and `ES_URL`) |
+| `--api-key KEY` | — | API key (overrides secret and `ES_API_KEY`) |
 | `--repo NAME` | `found-snapshots` | Snapshot repository to inspect |
 | `--pattern GLOB` | `*` | Only size orphans whose name matches this shell glob |
 | `--batch N` | `50` | Snapshots per `_status` request |
@@ -135,19 +166,19 @@ Example output:
 `2023.02.17-...`):
 
 ```bash
-./orphaned_snapshot_size_report.py --es-url "$URL" --api-key "$KEY" --pattern '2023.*'
+./orphaned_snapshot_size_report.py --cluster prod --pattern '2023.*'
 ```
 
 **See the biggest offenders:**
 
 ```bash
-./orphaned_snapshot_size_report.py --es-url "$URL" --api-key "$KEY" --per-snapshot
+./orphaned_snapshot_size_report.py --cluster prod --per-snapshot
 ```
 
 **Save a JSON report** (progress goes to stderr, so the file stays clean):
 
 ```bash
-./orphaned_snapshot_size_report.py --es-url "$URL" --api-key "$KEY" --json > orphan_size.json
+./orphaned_snapshot_size_report.py --cluster prod --json > orphan_size.json
 ```
 
 JSON shape:
@@ -167,10 +198,11 @@ JSON shape:
 
 Add `--per-snapshot` to include a sorted `per_snapshot` array in the JSON.
 
-**Basic-auth instead of an API key:**
+**Secret in a non-default region, or with a custom name:**
 
 ```bash
-./orphaned_snapshot_size_report.py --es-url "$URL" --es-user elastic --es-pass "$PASSWORD"
+./orphaned_snapshot_size_report.py --cluster prod --region us-east-1
+./orphaned_snapshot_size_report.py --secret-name elastic/kibana/dataview_cleanup_prod
 ```
 
 ---
@@ -203,9 +235,12 @@ Add `--per-snapshot` to include a sorted `per_snapshot` array in the JSON.
 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
-| `ERROR: provide the endpoint via --es-url or the ES_URL environment variable` | No endpoint given — pass `--es-url` or export `ES_URL`. |
-| `ERROR: set ES_API_KEY, or ES_USER and ES_PASS` | No credentials — pass `--api-key`, or `--es-user`+`--es-pass`. |
-| `HTTP 401` / `403` | Credentials invalid or lack privileges — grant `monitor` + `view_index_metadata`. |
+| `ERROR: no Elasticsearch endpoint resolved...` | No endpoint — pass `--cluster`, `--es-url`, or export `ES_URL`. |
+| `ERROR: no API key resolved...` | No API key — pass `--cluster`, `--api-key`, or export `ES_API_KEY`. |
+| `ERROR: AWS secret '...' is missing key(s): es_api_key` | The secret lacks `es_url`/`es_api_key` — add both keys to the secret JSON. |
+| `ERROR: reading AWS Secrets Manager needs either boto3 or the aws CLI` | Install boto3 (`pip install boto3`) or the `aws` CLI. |
+| `ERROR: failed to read AWS secret '...'` | AWS creds/permissions or region — check `secretsmanager:GetSecretValue` and `--region`. |
+| `HTTP 401` / `403` | API key invalid or lacks privileges — grant `monitor` + `view_index_metadata`. |
 | `HTTP 404` on `_snapshot/...` | Wrong repository name — set `--repo` to your actual repo. |
 | TLS / certificate errors | Use a proper CA-trusted endpoint; `--insecure` is a last resort for testing only. |
 | Runs slowly / affects the cluster | Lower `--batch`, scope with `--pattern`, or run off-peak. |

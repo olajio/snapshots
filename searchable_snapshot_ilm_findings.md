@@ -66,14 +66,22 @@ present-day misconfiguration. They require manual snapshot cleanup, e.g.:
   `found-snapshots` that are no longer referenced by any mounted index. DRY-RUN by
   default; pass `--apply` to delete, `--pattern '2023.*'` to scope by name, and
   `--report-size` to report how much repository storage the orphans occupy (read-only).
-  See the header comment for usage and required env vars (`ES_URL`, `ES_API_KEY` or
-  `ES_USER`/`ES_PASS`).
 
 - `orphaned_snapshot_size_report.py` -- standalone, read-only report of the total
   repository storage occupied by ONLY the orphaned searchable snapshots. Sums both the
   logical (`total`) and dedup-aware (`incremental`, i.e. reclaimable) sizes via the
-  `_status` API. Supports `--pattern`, `--per-snapshot`, and `--json`. Same env vars as
-  the cleanup script; standard library only.
+  `_status` API. Supports `--pattern`, `--per-snapshot`, and `--json`.
+
+- `HOWTO_orphaned_snapshot_size_report.md` -- usage guide for the size-report script.
+
+### Authentication (API key only)
+
+Both tools authenticate with an Elasticsearch **API key** (no basic auth). The
+recommended path is `--cluster <dev|qa|ccs|prod>`, which loads `es_url` and `es_api_key`
+from AWS Secrets Manager secret `elastic/kibana/dataview_cleanup_<cluster>` (the same
+secret family as the Kibana data-view cleanup project). Credential resolution order is:
+explicit `--es-url`/`--api-key` flags, then the AWS secret, then the `ES_URL`/`ES_API_KEY`
+environment variables. AWS lookups use boto3 if available, else the `aws` CLI.
 
 ## Measuring how much storage the orphans use
 

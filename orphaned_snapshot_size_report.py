@@ -19,33 +19,42 @@ How it works
      - total.size_in_bytes        (full logical size)
      - incremental.size_in_bytes  (dedup-aware -> best estimate of space reclaimed)
 
-Connection (pass as CLI arguments OR environment variables)
-------------------------------------------------------------
-  --es-url URL     (or ES_URL)      e.g. https://my-deployment.es.us-east-1.aws.found.io:9243
-  --api-key KEY    (or ES_API_KEY)  an API key ("encoded" value)          -- OR --
-  --es-user USER   (or ES_USER)     basic-auth username
-  --es-pass PASS   (or ES_PASS)     basic-auth password
+Connection -- API key only (no basic auth)
+------------------------------------------
+Recommended: fetch credentials from AWS Secrets Manager with --cluster. The secret
+is named `elastic/kibana/dataview_cleanup_<cluster>` and must contain the keys:
+    es_url      -> the Elasticsearch endpoint
+    es_api_key  -> the API key ("encoded" value)
 
-  CLI arguments take precedence over the environment variables when both are set.
-  NOTE: passing secrets as CLI arguments can expose them in shell history and the
-  process list (ps). Environment variables are safer for the API key/password.
+    dev  -> elastic/kibana/dataview_cleanup_dev
+    qa   -> elastic/kibana/dataview_cleanup_qa
+    ccs  -> elastic/kibana/dataview_cleanup_ccs
+    prod -> elastic/kibana/dataview_cleanup_prod
+
+Resolution order for the endpoint and API key (first match wins):
+    1. explicit --es-url / --api-key flags
+    2. AWS Secrets Manager (when --cluster or --secret-name is given)
+    3. environment variables ES_URL / ES_API_KEY
 
 Usage
 -----
-  # everything on the command line
-  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY"
-  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY" --pattern '2023.*'
-  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY" --json > report.json
+  # load endpoint + API key from AWS Secrets Manager for a cluster (recommended)
+  ./orphaned_snapshot_size_report.py --cluster prod
+  ./orphaned_snapshot_size_report.py --cluster dev --pattern '2023.*'
+  ./orphaned_snapshot_size_report.py --cluster qa --json > report.json
 
-  # or via environment variables (unchanged, still supported)
+  # or supply them directly / via environment variables
+  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY"
   ES_URL=... ES_API_KEY=... ./orphaned_snapshot_size_report.py
 
 Options
 -------
-  --es-url URL      Elasticsearch endpoint (overrides ES_URL)
-  --api-key KEY     API key, "encoded" value (overrides ES_API_KEY)
-  --es-user USER    Basic-auth username (overrides ES_USER)
-  --es-pass PASS    Basic-auth password (overrides ES_PASS)
+  --cluster {dev,qa,ccs,prod}  Load es_url/es_api_key from AWS Secrets Manager
+                               secret elastic/kibana/dataview_cleanup_<cluster>.
+  --secret-name NAME           Override the derived AWS secret name.
+  --region NAME                AWS region for Secrets Manager (else default chain).
+  --es-url URL      Elasticsearch endpoint (overrides secret and ES_URL)
+  --api-key KEY     API key, "encoded" value (overrides secret and ES_API_KEY)
   --repo NAME       Snapshot repository (default: found-snapshots)
   --pattern GLOB    Only size orphans whose name matches this glob (default: '*')
   --batch N         Snapshots per _status request (default: 50)
@@ -53,11 +62,12 @@ Options
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
-Requires: Python 3.7+ (standard library only).
+Requires: Python 3.7+. AWS Secrets Manager lookups use boto3 if installed, else
+fall back to the `aws` CLI. No third-party packages are needed unless you use
+--cluster/--secret-name without the aws CLI available.
 """
 
 import argparse
-import base64
 import fnmatch
 import json
 import os
@@ -65,6 +75,9 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
+
+SECRET_PREFIX = "elastic/kibana/dataview_cleanup_"
+VALID_CLUSTERS = ("dev", "qa", "ccs", "prod")
 
 
 def human(n):
@@ -75,17 +88,64 @@ def human(n):
         n /= 1024
 
 
+def _get_secret_string(secret_name, region):
+    """Return the raw SecretString for secret_name, via boto3 or the aws CLI."""
+    # Preferred path: boto3.
+    try:
+        import boto3  # type: ignore
+        from botocore.exceptions import BotoCoreError, ClientError  # type: ignore
+    except ImportError:
+        boto3 = None
+    if boto3 is not None:
+        try:
+            client = boto3.client("secretsmanager", **({"region_name": region} if region else {}))
+            return client.get_secret_value(SecretId=secret_name)["SecretString"]
+        except (BotoCoreError, ClientError) as e:
+            sys.exit(f"ERROR: failed to read AWS secret '{secret_name}': {e}")
+
+    # Fallback: the aws CLI.
+    import shutil
+    import subprocess
+    if not shutil.which("aws"):
+        sys.exit("ERROR: reading AWS Secrets Manager needs either boto3 or the aws CLI, "
+                 "and neither is available.")
+    cmd = ["aws", "secretsmanager", "get-secret-value",
+           "--secret-id", secret_name, "--query", "SecretString", "--output", "text"]
+    if region:
+        cmd += ["--region", region]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"ERROR: aws CLI failed to read secret '{secret_name}':\n{e.stderr.strip()}")
+
+
+def fetch_secret_creds(secret_name, region):
+    """Return (es_url, es_api_key) from an AWS Secrets Manager JSON secret."""
+    raw = _get_secret_string(secret_name, region)
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        sys.exit(f"ERROR: AWS secret '{secret_name}' is not valid JSON.")
+    es_url = data.get("es_url")
+    es_api_key = data.get("es_api_key")
+    missing = [k for k, v in (("es_url", es_url), ("es_api_key", es_api_key)) if not v]
+    if missing:
+        sys.exit(f"ERROR: AWS secret '{secret_name}' is missing key(s): {', '.join(missing)}. "
+                 "It must contain both 'es_url' and 'es_api_key'.")
+    return es_url, es_api_key
+
+
 class ESClient:
-    def __init__(self, url, api_key=None, user=None, password=None, insecure=False):
+    def __init__(self, url, api_key, insecure=False):
+        if not api_key:
+            sys.exit("ERROR: no API key resolved. Use --cluster (AWS Secrets Manager), "
+                     "--api-key, or the ES_API_KEY environment variable.")
         self.base = url.rstrip("/")
-        self.headers = {"Content-Type": "application/json"}
-        if api_key:
-            self.headers["Authorization"] = f"ApiKey {api_key}"
-        elif user and password:
-            token = base64.b64encode(f"{user}:{password}".encode()).decode()
-            self.headers["Authorization"] = f"Basic {token}"
-        else:
-            sys.exit("ERROR: set ES_API_KEY, or ES_USER and ES_PASS")
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"ApiKey {api_key}",
+        }
         self.ctx = None
         if insecure:
             self.ctx = ssl.create_default_context()
@@ -141,12 +201,32 @@ def size_snapshots(es, repo, names, batch):
     return total, incr, per
 
 
+def resolve_credentials(args):
+    """Resolve (es_url, api_key) using flags -> AWS secret -> environment."""
+    url = args.es_url
+    api_key = args.api_key
+
+    if args.cluster or args.secret_name:
+        secret_name = args.secret_name or (SECRET_PREFIX + args.cluster)
+        sys.stderr.write(f"Loading credentials from AWS secret: {secret_name}\n")
+        s_url, s_key = fetch_secret_creds(secret_name, args.region)
+        url = url or s_url
+        api_key = api_key or s_key
+
+    url = url or os.environ.get("ES_URL")
+    api_key = api_key or os.environ.get("ES_API_KEY")
+    return url, api_key
+
+
 def main():
     ap = argparse.ArgumentParser(description="Report storage used by orphaned searchable snapshots.")
-    ap.add_argument("--es-url", help="Elasticsearch endpoint (overrides ES_URL)")
-    ap.add_argument("--api-key", help="API key, 'encoded' value (overrides ES_API_KEY)")
-    ap.add_argument("--es-user", help="Basic-auth username (overrides ES_USER)")
-    ap.add_argument("--es-pass", help="Basic-auth password (overrides ES_PASS)")
+    ap.add_argument("--cluster", choices=VALID_CLUSTERS,
+                    help="Load es_url/es_api_key from AWS Secrets Manager secret "
+                         "elastic/kibana/dataview_cleanup_<cluster>.")
+    ap.add_argument("--secret-name", help="Override the derived AWS secret name.")
+    ap.add_argument("--region", help="AWS region for Secrets Manager (else default chain).")
+    ap.add_argument("--es-url", help="Elasticsearch endpoint (overrides secret and ES_URL)")
+    ap.add_argument("--api-key", help="API key, 'encoded' value (overrides secret and ES_API_KEY)")
     ap.add_argument("--repo", default="found-snapshots")
     ap.add_argument("--pattern", default="*")
     ap.add_argument("--batch", type=int, default=50)
@@ -155,21 +235,11 @@ def main():
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
-    # CLI arguments take precedence over environment variables.
-    url = args.es_url or os.environ.get("ES_URL")
-    api_key = args.api_key or os.environ.get("ES_API_KEY")
-    user = args.es_user or os.environ.get("ES_USER")
-    password = args.es_pass or os.environ.get("ES_PASS")
-
+    url, api_key = resolve_credentials(args)
     if not url:
-        sys.exit("ERROR: provide the endpoint via --es-url or the ES_URL environment variable")
-    es = ESClient(
-        url,
-        api_key=api_key,
-        user=user,
-        password=password,
-        insecure=args.insecure,
-    )
+        sys.exit("ERROR: no Elasticsearch endpoint resolved. Use --cluster "
+                 "(AWS Secrets Manager), --es-url, or the ES_URL environment variable.")
+    es = ESClient(url, api_key=api_key, insecure=args.insecure)
 
     sys.stderr.write(f"Repo    : {args.repo}\nPattern : {args.pattern}\n")
     sys.stderr.write("Collecting in-use snapshots from mounted indices...\n")
