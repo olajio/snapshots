@@ -1,0 +1,38 @@
+{
+  "policy": {
+    "phases": {
+      "hot": {
+        "min_age": "0ms",
+        "actions": {
+          "forcemerge": {
+            "max_num_segments": 1
+          },
+          "rollover": {
+            "max_age": "30d",
+            "max_size": "30gb"
+          },
+          "set_priority": {
+            "priority": 100
+          }
+        }
+      },
+      "frozen": {
+        "min_age": "1d",
+        "actions": {
+          "searchable_snapshot": {
+            "snapshot_repository": "found-snapshots",
+            "force_merge_index": true
+          }
+        }
+      },
+      "delete": {
+        "min_age": "365d",
+        "actions": {
+          "delete": {
+            "delete_searchable_snapshot": true
+          }
+        }
+      }
+    }
+  }
+}
