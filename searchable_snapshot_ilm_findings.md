@@ -62,25 +62,22 @@ present-day misconfiguration. They require manual snapshot cleanup, e.g.:
     snapshot) is deleted. Set this to your actual retention requirement before applying --
     too small a value deletes data early.
 
-- `cleanup_orphaned_searchable_snapshots.sh` -- finds/deletes searchable snapshots in
-  `found-snapshots` that are no longer referenced by any mounted index. DRY-RUN by
-  default; pass `--apply` to delete, `--pattern '2023.*'` to scope by name, and
-  `--report-size` to report how much repository storage the orphans occupy (read-only).
+- `orphaned_searchable_snapshots.py` -- single Python tool to find, size, and (with
+  `--apply`) delete orphaned searchable snapshots in `found-snapshots`. DRY-RUN by default;
+  `--report-size` sums the logical (`total`) and dedup-aware (`incremental`, i.e.
+  reclaimable) sizes via the `_status` API; `--pattern '2023.*'` scopes by name;
+  `--per-snapshot` and `--json` control output. Requests are batched under the ES HTTP
+  request-line limit to avoid `too_long_http_line_exception`.
 
-- `orphaned_snapshot_size_report.py` -- standalone, read-only report of the total
-  repository storage occupied by ONLY the orphaned searchable snapshots. Sums both the
-  logical (`total`) and dedup-aware (`incremental`, i.e. reclaimable) sizes via the
-  `_status` API. Supports `--pattern`, `--per-snapshot`, and `--json`.
-
-- `HOWTO_orphaned_snapshot_size_report.md` -- usage guide for the size-report script.
+- `HOWTO_orphaned_searchable_snapshots.md` -- usage guide for the tool above.
 
 ### Authentication (API key only)
 
-Both tools authenticate with an Elasticsearch **API key** (no basic auth). The
-recommended path is `--cluster <dev|qa|ccs|prod>`, which loads `es_url` and `es_api_key`
-from AWS Secrets Manager secret `elastic/kibana/dataview_cleanup_<cluster>` (the same
-secret family as the Kibana data-view cleanup project). Credential resolution order is:
-explicit `--es-url`/`--api-key` flags, then the AWS secret, then the `ES_URL`/`ES_API_KEY`
+The tool authenticates with an Elasticsearch **API key** (no basic auth). The recommended
+path is `--cluster <dev|qa|ccs|prod>`, which loads `es_url` and `es_api_key` from AWS
+Secrets Manager secret `elastic/kibana/dataview_cleanup_<cluster>` (the same secret family
+as the Kibana data-view cleanup project). Credential resolution order is: explicit
+`--es-url`/`--api-key` flags, then the AWS secret, then the `ES_URL`/`ES_API_KEY`
 environment variables. AWS lookups use boto3 if available, else the `aws` CLI.
 
 ## Measuring how much storage the orphans use
