@@ -19,20 +19,33 @@ How it works
      - total.size_in_bytes        (full logical size)
      - incremental.size_in_bytes  (dedup-aware -> best estimate of space reclaimed)
 
-Configuration (environment variables)
---------------------------------------
-  ES_URL       e.g. https://my-deployment.es.us-east-1.aws.found.io:9243
-  ES_API_KEY   an API key ("encoded" value)                    -- OR --
-  ES_USER / ES_PASS   basic-auth credentials
+Connection (pass as CLI arguments OR environment variables)
+------------------------------------------------------------
+  --es-url URL     (or ES_URL)      e.g. https://my-deployment.es.us-east-1.aws.found.io:9243
+  --api-key KEY    (or ES_API_KEY)  an API key ("encoded" value)          -- OR --
+  --es-user USER   (or ES_USER)     basic-auth username
+  --es-pass PASS   (or ES_PASS)     basic-auth password
+
+  CLI arguments take precedence over the environment variables when both are set.
+  NOTE: passing secrets as CLI arguments can expose them in shell history and the
+  process list (ps). Environment variables are safer for the API key/password.
 
 Usage
 -----
+  # everything on the command line
+  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY"
+  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY" --pattern '2023.*'
+  ./orphaned_snapshot_size_report.py --es-url https://host:9243 --api-key "$KEY" --json > report.json
+
+  # or via environment variables (unchanged, still supported)
   ES_URL=... ES_API_KEY=... ./orphaned_snapshot_size_report.py
-  ES_URL=... ES_API_KEY=... ./orphaned_snapshot_size_report.py --pattern '2023.*'
-  ES_URL=... ES_API_KEY=... ./orphaned_snapshot_size_report.py --json > report.json
 
 Options
 -------
+  --es-url URL      Elasticsearch endpoint (overrides ES_URL)
+  --api-key KEY     API key, "encoded" value (overrides ES_API_KEY)
+  --es-user USER    Basic-auth username (overrides ES_USER)
+  --es-pass PASS    Basic-auth password (overrides ES_PASS)
   --repo NAME       Snapshot repository (default: found-snapshots)
   --pattern GLOB    Only size orphans whose name matches this glob (default: '*')
   --batch N         Snapshots per _status request (default: 50)
@@ -130,6 +143,10 @@ def size_snapshots(es, repo, names, batch):
 
 def main():
     ap = argparse.ArgumentParser(description="Report storage used by orphaned searchable snapshots.")
+    ap.add_argument("--es-url", help="Elasticsearch endpoint (overrides ES_URL)")
+    ap.add_argument("--api-key", help="API key, 'encoded' value (overrides ES_API_KEY)")
+    ap.add_argument("--es-user", help="Basic-auth username (overrides ES_USER)")
+    ap.add_argument("--es-pass", help="Basic-auth password (overrides ES_PASS)")
     ap.add_argument("--repo", default="found-snapshots")
     ap.add_argument("--pattern", default="*")
     ap.add_argument("--batch", type=int, default=50)
@@ -138,14 +155,19 @@ def main():
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
-    url = os.environ.get("ES_URL")
+    # CLI arguments take precedence over environment variables.
+    url = args.es_url or os.environ.get("ES_URL")
+    api_key = args.api_key or os.environ.get("ES_API_KEY")
+    user = args.es_user or os.environ.get("ES_USER")
+    password = args.es_pass or os.environ.get("ES_PASS")
+
     if not url:
-        sys.exit("ERROR: set ES_URL to your Elasticsearch endpoint")
+        sys.exit("ERROR: provide the endpoint via --es-url or the ES_URL environment variable")
     es = ESClient(
         url,
-        api_key=os.environ.get("ES_API_KEY"),
-        user=os.environ.get("ES_USER"),
-        password=os.environ.get("ES_PASS"),
+        api_key=api_key,
+        user=user,
+        password=password,
         insecure=args.insecure,
     )
 
