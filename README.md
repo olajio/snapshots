@@ -66,6 +66,9 @@ environment variables instead.
   metadata; `--incremental` for the dedup-aware reclaimable figure via `_status`.
 - **ILM culprit analysis** (`--check-ilm`) — flags policies that create searchable
   snapshots but won't let ILM delete them, with the count/size of orphans each has produced.
+- **Historical leak review** (`--ilm-review-file`) — logs policies that are compliant *now*
+  but leaked orphans in the past, with each policy's last-updated date; flags any that
+  leaked *after* their last update as **NEEDS REVIEW**.
 - **SLM-aware** — excludes SLM-managed snapshots from the orphan set.
 - **Safe deletion** (`--apply`) — dry-run by default; requests are batched under the ES HTTP
   request-line limit and retry with backoff on timeouts / `429` / `5xx`.

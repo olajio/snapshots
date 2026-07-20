@@ -14,6 +14,7 @@ Single tool for the whole workflow:
   * default            -> DRY-RUN: list the orphans, change nothing.
   * --report-size      -> also report how much repository storage they occupy.
   * --check-ilm        -> also flag ILM policies that will create future orphans.
+  * --ilm-review-file  -> log now-compliant policies that leaked orphans in the past.
   * --apply            -> delete the orphans (dry-run unless this is given).
 
 How it works
@@ -95,6 +96,11 @@ Options
                     use --json for the full per-snapshot list).
   --audit-file PATH Write the FULL orphan list plus summary/analysis to a text file (the
                     on-screen output still shows only the top 25). For audit records.
+  --ilm-review-file PATH
+                    Write a report of ILM policies that appear to have leaked orphans in
+                    the past but are currently compliant, with each policy's last-updated
+                    date. Policies with an orphan taken AFTER that date are flagged
+                    NEEDS REVIEW. Implies --check-ilm.
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -103,9 +109,11 @@ fall back to the `aws` CLI.
 """
 
 import argparse
+import datetime
 import fnmatch
 import json
 import os
+import re
 import socket
 import ssl
 import sys
@@ -348,64 +356,139 @@ def delete_snapshots(es, repo, names, batch):
     return deleted
 
 
-def find_offending_ilm_policies(es):
-    """Return the ILM policies that CREATE searchable snapshots but will not let ILM
-    delete them -- the sources of future orphans.
+def analyze_ilm_policies(es):
+    """Fetch _ilm/policy and describe every policy that uses searchable_snapshot.
 
-    delete_searchable_snapshot defaults to True, so a policy leaks only when it takes
-    a searchable_snapshot but (a) has no delete phase/action, or (b) sets
-    delete_searchable_snapshot: false. Returns a list of dicts sorted by name.
+    Returns dict: policy_name -> {
+        'modified_date': str|None,     # ILM policy's last-updated timestamp
+        'ss_phases': [...],            # phases with a searchable_snapshot action
+        'offending': bool,             # currently leaks (no delete phase / dss:false)
+        'reason': str|None,            # why it is offending, else None
+    }
+
+    delete_searchable_snapshot defaults to True, so a policy currently leaks only when it
+    takes a searchable_snapshot but (a) has no delete phase/action, or (b) sets
+    delete_searchable_snapshot: false.
     """
     data = es.get("/_ilm/policy")
-    offending = []
-    for name, body in sorted(data.items()):
+    out = {}
+    for name, body in data.items():
         phases = body.get("policy", {}).get("phases", {})
         ss_phases = [ph for ph, cfg in phases.items()
                      if "searchable_snapshot" in cfg.get("actions", {})]
         if not ss_phases:
             continue
         delete_actions = phases.get("delete", {}).get("actions", {})
+        offending, reason = False, None
         if "delete" not in delete_actions:
-            offending.append({
-                "policy": name, "searchable_snapshot_phases": ss_phases,
-                "reason": "no delete phase -> ILM never deletes the searchable snapshot",
-                "delete_searchable_snapshot": None,
-            })
-        else:
-            dss = delete_actions["delete"].get("delete_searchable_snapshot", True)
-            if dss is False:
-                offending.append({
-                    "policy": name, "searchable_snapshot_phases": ss_phases,
-                    "reason": "delete phase sets delete_searchable_snapshot: false",
-                    "delete_searchable_snapshot": False,
-                })
-    return offending
+            offending = True
+            reason = "no delete phase -> ILM never deletes the searchable snapshot"
+        elif delete_actions["delete"].get("delete_searchable_snapshot", True) is False:
+            offending = True
+            reason = "delete phase sets delete_searchable_snapshot: false"
+        out[name] = {
+            "modified_date": body.get("modified_date"),
+            "ss_phases": ss_phases,
+            "offending": offending,
+            "reason": reason,
+        }
+    return out
+
+
+def offending_from_index(ilm_index):
+    """Build the offending-policy list (shape used by print_ilm_section) from the index."""
+    return [
+        {"policy": n, "searchable_snapshot_phases": v["ss_phases"], "reason": v["reason"]}
+        for n, v in sorted(ilm_index.items()) if v["offending"]
+    ]
+
+
+def _best_policy_match(name, policy_names):
+    """Return the policy whose '-<policy>-' marker sits closest to the END of the snapshot
+    name (rightmost wins; longer name breaks ties), or None. Searchable-snapshot names are
+    {date}-{index}-{ilm-policy}-{uuid}, so the policy sits just before the uuid suffix."""
+    best_p, best_pos = None, -1
+    for p in policy_names:
+        pos = name.rfind(f"-{p}-")
+        if pos == -1:
+            continue
+        if pos > best_pos or (pos == best_pos and len(p) > len(best_p or "")):
+            best_pos, best_p = pos, p
+    return best_p
 
 
 def attribute_orphans(orphans, policy_names, per_sizes=None):
-    """Attribute each orphan to the offending ILM policy embedded in its name.
-
-    Searchable-snapshot names follow {date}-{index}-{ilm-policy}-{uuid}, so the policy
-    sits just before the uuid suffix. For each orphan we pick the offending policy whose
-    '-<policy>-' marker occurs closest to the END of the name (rightmost wins; longer name
-    breaks ties) to avoid matching the same token inside the index portion.
-
-    Returns dict: policy -> {"count": n, "bytes": b} (bytes 0 if per_sizes is None).
-    """
+    """Attribute each orphan to the policy embedded in its name.
+    Returns dict: policy -> {"count": n, "bytes": b} (bytes 0 if per_sizes is None)."""
     result = {p: {"count": 0, "bytes": 0} for p in policy_names}
     for name in orphans:
-        best_p, best_pos = None, -1
-        for p in policy_names:
-            pos = name.rfind(f"-{p}-")
-            if pos == -1:
-                continue
-            if pos > best_pos or (pos == best_pos and len(p) > len(best_p or "")):
-                best_pos, best_p = pos, p
+        best_p = _best_policy_match(name, policy_names)
         if best_p is not None:
             result[best_p]["count"] += 1
             if per_sizes is not None:
                 result[best_p]["bytes"] += per_sizes.get(name, {}).get("total", 0)
     return result
+
+
+def _snapshot_date(name):
+    """Leading YYYY.MM.DD of a snapshot name -> datetime.date, or None."""
+    m = re.match(r"(\d{4})\.(\d{2})\.(\d{2})", name)
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _modified_date(iso):
+    """Parse an ILM modified_date (e.g. 2023-06-21T13:14:53.420Z) -> datetime.date."""
+    if not iso:
+        return None
+    try:
+        return datetime.date.fromisoformat(iso[:10])
+    except ValueError:
+        return None
+
+
+def formerly_leaking_policies(orphans, ilm_index, per_sizes=None):
+    """Identify NON-offending searchable-snapshot policies that still have orphans -- i.e.
+    they appear to have leaked in the past but are currently compliant.
+
+    For each, records the policy's last-updated date, the orphan count/size, and the orphan
+    date range. needs_review is True when at least one orphan was TAKEN (snapshot date)
+    AFTER the policy's last update -- meaning it may still be leaking (or the index was
+    deleted outside ILM), and a human should look.
+    """
+    policy_names = list(ilm_index.keys())
+    buckets = {}
+    for name in orphans:
+        p = _best_policy_match(name, policy_names)
+        if p is not None:
+            buckets.setdefault(p, []).append(name)
+
+    results = []
+    for p, names in buckets.items():
+        if ilm_index[p]["offending"]:
+            continue  # current culprit -- reported in the offending section instead
+        mod = _modified_date(ilm_index[p].get("modified_date"))
+        dates = [d for d in (_snapshot_date(n) for n in names) if d]
+        latest = max(dates) if dates else None
+        earliest = min(dates) if dates else None
+        total_bytes = (sum(per_sizes.get(n, {}).get("total", 0) for n in names)
+                       if per_sizes is not None else None)
+        results.append({
+            "policy": p,
+            "modified_date": ilm_index[p].get("modified_date"),
+            "orphan_count": len(names),
+            "orphan_bytes": total_bytes,
+            "earliest_orphan": earliest.isoformat() if earliest else None,
+            "latest_orphan": latest.isoformat() if latest else None,
+            "needs_review": bool(mod and latest and latest > mod),
+        })
+    # NEEDS REVIEW first, then by orphan count desc, then name.
+    results.sort(key=lambda r: (not r["needs_review"], -r["orphan_count"], r["policy"]))
+    return results
 
 
 def resolve_credentials(args):
@@ -462,12 +545,19 @@ def main():
     ap.add_argument("--audit-file", metavar="PATH",
                     help="Write the FULL orphan list plus summary and analysis to this text "
                          "file (the on-screen output still shows only the top 25).")
+    ap.add_argument("--ilm-review-file", metavar="PATH",
+                    help="Write a report of ILM policies that appear to have leaked orphans "
+                         "in the past but are currently compliant, with each policy's last "
+                         "update date. Policies with an orphan taken AFTER that date are "
+                         "flagged NEEDS REVIEW. Implies --check-ilm.")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
     if args.incremental or args.per_snapshot:
         args.report_size = True  # both only make sense while reporting size
+    if args.ilm_review_file:
+        args.check_ilm = True  # the review report needs the ILM policy data
 
     url, api_key = resolve_credentials(args)
     if not url:
@@ -510,13 +600,17 @@ def main():
     }
 
     # Optional: analyse ILM policies for culprits that will create future orphans.
+    ilm_index = None
     if args.check_ilm:
         sys.stderr.write("Analysing ILM policies for searchable-snapshot culprits...\n")
-        offending = find_offending_ilm_policies(es)
-        report["offending_ilm_policies"] = offending
-        sys.stderr.write(f"  offending ILM policies: {len(offending)}\n")
+        ilm_index = analyze_ilm_policies(es)
+        report["offending_ilm_policies"] = offending_from_index(ilm_index)
+        sys.stderr.write(f"  offending ILM policies: {len(report['offending_ilm_policies'])}\n")
 
     if not orphans:
+        if args.ilm_review_file and ilm_index is not None:
+            write_ilm_review_file(args.ilm_review_file, args,
+                                  formerly_leaking_policies([], ilm_index, None))
         if args.audit_file:
             write_audit_file(args.audit_file, args, report, [], None)
         if args.json:
@@ -566,6 +660,12 @@ def main():
             if args.report_size:
                 p["orphan_bytes"] = a["bytes"]
                 p["orphan_human"] = human(a["bytes"])
+
+    # Optional: log formerly-leaking-but-now-compliant ILM policies to a review file.
+    if args.ilm_review_file and ilm_index is not None:
+        review = formerly_leaking_policies(orphans, ilm_index, per)
+        report["formerly_leaking_ilm_policies"] = review
+        write_ilm_review_file(args.ilm_review_file, args, review)
 
     # Optional: delete the orphans.
     if args.apply:
@@ -737,6 +837,68 @@ def write_audit_file(path, args, report, orphans, per):
         sys.stderr.write(f"Audit file written: {path} ({len(orphans)} orphan(s))\n")
     except OSError as e:
         sys.stderr.write(f"WARNING: could not write audit file '{path}': {e}\n")
+
+
+def write_ilm_review_file(path, args, review):
+    """Write the formerly-leaking-but-now-compliant ILM policy report to a text file."""
+    L = []
+    def w(s=""):
+        L.append(s)
+
+    needs = [r for r in review if r["needs_review"]]
+    ok = [r for r in review if not r["needs_review"]]
+
+    def fmt(r):
+        sz = human(r["orphan_bytes"]) if r.get("orphan_bytes") is not None else "n/a"
+        dates = f"{r['earliest_orphan']} .. {r['latest_orphan']}"
+        return sz, dates
+
+    w("=" * 70)
+    w("ILM POLICIES THAT APPEAR TO HAVE LEAKED SEARCHABLE SNAPSHOTS")
+    w("(currently compliant -- delete_searchable_snapshot is NOT disabled)")
+    w("=" * 70)
+    w(f"Generated (UTC) : {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+    w(f"Cluster         : {args.cluster or '(from --es-url / ES_URL)'}")
+    w("")
+    w("A policy is listed here if it currently HAS a delete phase with")
+    w("delete_searchable_snapshot enabled, yet orphaned searchable snapshots exist whose")
+    w("name embeds this policy -- i.e. it leaked in the past but looks compliant now")
+    w("(likely updated after the leak).")
+    w("")
+    w("'NEEDS REVIEW' = at least one leaked snapshot was TAKEN (snapshot date) AFTER the")
+    w("policy's last update, so it may still be leaking, or the index was deleted outside")
+    w("ILM. Those should be reviewed by a human.")
+    w("")
+
+    w(f"NEEDS REVIEW -- leaked AFTER last update ({len(needs)}):")
+    if not needs:
+        w("  (none)")
+    for r in needs:
+        sz, dates = fmt(r)
+        w(f"  - {r['policy']}")
+        w(f"      last updated : {r['modified_date']}")
+        w(f"      orphans      : {r['orphan_count']}  ({sz})")
+        w(f"      orphan dates : {dates}")
+        w(f"      !! latest orphan {r['latest_orphan']} is AFTER last update "
+          f"{(r['modified_date'] or '')[:10]} -> REVIEW")
+    w("")
+
+    w(f"LIKELY ALREADY FIXED -- all leaked snapshots predate last update ({len(ok)}):")
+    if not ok:
+        w("  (none)")
+    for r in ok:
+        sz, dates = fmt(r)
+        w(f"  - {r['policy']}  (last updated {(r['modified_date'] or 'unknown')[:10]}; "
+          f"orphans {r['orphan_count']}, {sz}; dates {dates})")
+    w("")
+
+    try:
+        with open(path, "w") as fh:
+            fh.write("\n".join(L) + "\n")
+        sys.stderr.write(f"ILM review file written: {path} "
+                         f"({len(needs)} need review, {len(ok)} likely fixed)\n")
+    except OSError as e:
+        sys.stderr.write(f"WARNING: could not write ILM review file '{path}': {e}\n")
 
 
 if __name__ == "__main__":
