@@ -359,6 +359,32 @@ def find_offending_ilm_policies(es):
     return offending
 
 
+def attribute_orphans(orphans, policy_names, per_sizes=None):
+    """Attribute each orphan to the offending ILM policy embedded in its name.
+
+    Searchable-snapshot names follow {date}-{index}-{ilm-policy}-{uuid}, so the policy
+    sits just before the uuid suffix. For each orphan we pick the offending policy whose
+    '-<policy>-' marker occurs closest to the END of the name (rightmost wins; longer name
+    breaks ties) to avoid matching the same token inside the index portion.
+
+    Returns dict: policy -> {"count": n, "bytes": b} (bytes 0 if per_sizes is None).
+    """
+    result = {p: {"count": 0, "bytes": 0} for p in policy_names}
+    for name in orphans:
+        best_p, best_pos = None, -1
+        for p in policy_names:
+            pos = name.rfind(f"-{p}-")
+            if pos == -1:
+                continue
+            if pos > best_pos or (pos == best_pos and len(p) > len(best_p or "")):
+                best_pos, best_p = pos, p
+        if best_p is not None:
+            result[best_p]["count"] += 1
+            if per_sizes is not None:
+                result[best_p]["bytes"] += per_sizes.get(name, {}).get("total", 0)
+    return result
+
+
 def resolve_credentials(args):
     """Resolve (es_url, api_key) using flags -> AWS secret -> environment."""
     url = args.es_url
@@ -463,6 +489,7 @@ def main():
         sys.stderr.write(f"  orphan: {name}\n")
 
     # Optional: size the orphans.
+    per = None
     if args.report_size:
         if args.incremental:
             sys.stderr.write(f"Sizing {len(orphans)} orphan(s) via _status "
@@ -486,6 +513,17 @@ def main():
                      **({"incremental_bytes": v["incremental"]} if "incremental" in v else {}))
                 for n, v in sorted(per.items(), key=lambda kv: kv[1]["total"], reverse=True)
             ]
+
+    # Optional: attribute orphans to the offending ILM policies that produced them.
+    if args.check_ilm and report.get("offending_ilm_policies"):
+        attrib = attribute_orphans(
+            orphans, [p["policy"] for p in report["offending_ilm_policies"]], per)
+        for p in report["offending_ilm_policies"]:
+            a = attrib[p["policy"]]
+            p["orphan_count"] = a["count"]
+            if args.report_size:
+                p["orphan_bytes"] = a["bytes"]
+                p["orphan_human"] = human(a["bytes"])
 
     # Optional: delete the orphans.
     if args.apply:
@@ -542,11 +580,22 @@ def print_ilm_section(args, report):
         return
     print(f"  {len(offending)} policy(ies) create searchable snapshots that ILM will NOT")
     print("  clean up -- these are the source of future orphans:")
+    attributed_bytes = 0
     for p in offending:
         phases = ",".join(p["searchable_snapshot_phases"])
         print(f"    - {p['policy']}  (searchable_snapshot in: {phases})")
         print(f"        {p['reason']}")
+        if "orphan_count" in p:
+            if "orphan_human" in p:
+                attributed_bytes += p.get("orphan_bytes", 0)
+                print(f"        orphaned snapshots from this policy: {p['orphan_count']}"
+                      f"  ({p['orphan_human']})")
+            else:
+                print(f"        orphaned snapshots from this policy: {p['orphan_count']}"
+                      "  (add --report-size for their size)")
     print("======================================================================")
+    if any("orphan_human" in p for p in offending):
+        print(f"  total orphaned storage attributable to these policies: {human(attributed_bytes)}")
     print("  Fix: add a delete phase with delete_searchable_snapshot: true (its default),")
     print("  or set it to true where it is currently false.")
 
