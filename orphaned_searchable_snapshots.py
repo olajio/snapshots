@@ -4,8 +4,11 @@ orphaned_searchable_snapshots.py
 
 Find, size, and (optionally) delete ORPHANED searchable snapshots -- snapshots in
 the `found-snapshots` repository that are no longer referenced by any mounted
-searchable-snapshot index. These are the leftovers from a frozen index being
-deleted (or its ILM policy changed) without ILM running the delete phase.
+searchable-snapshot index AND are not managed by SLM. These are the leftovers from a
+frozen index being deleted (or its ILM policy changed) without ILM running the delete
+phase. Snapshots created by Snapshot Lifecycle Management (SLM) -- e.g. the periodic
+cloud-snapshot-* backups -- are retired by SLM's own retention, so they are never
+treated as orphans.
 
 Single tool for the whole workflow:
   * default            -> DRY-RUN: list the orphans, change nothing.
@@ -18,7 +21,8 @@ How it works
 1. Collect the set of snapshots currently IN USE, from the settings of mounted
    searchable-snapshot indices (index.store.snapshot.snapshot_name).
 2. List every snapshot in the repository.
-3. Orphans = all snapshots - in-use snapshots (optionally filtered by --pattern).
+3. Orphans = all snapshots - in-use snapshots - SLM-managed snapshots (those whose
+   metadata.policy names an SLM policy), optionally filtered by --pattern.
 4. --report-size: sum the orphans' storage. By default this uses the Get Snapshot
    API's index_details (snapshot metadata) for the total logical size -- fast and
    safe on large repos. Add --incremental for the dedup-aware "reclaimable" size
@@ -87,7 +91,8 @@ Options
   --batch N         Max snapshots per request (also bounded by URL length; default 50)
   --timeout N       Per-request read timeout in seconds (default 120)
   --retries N       Retries with backoff on read timeouts / 429 / 5xx (default 3)
-  --per-snapshot    With --report-size, print a per-snapshot breakdown (largest first)
+  --per-snapshot    Print the largest 25 orphans with their size (implies --report-size;
+                    use --json for the full per-snapshot list).
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -259,8 +264,24 @@ def collect_in_use(es, repo):
 
 
 def list_all_snapshots(es, repo):
+    """Return a list of (snapshot_name, slm_policy) for every snapshot in the repo.
+
+    slm_policy is the SLM policy managing the snapshot -- taken from the snapshot's
+    metadata.policy, which Snapshot Lifecycle Management stamps onto snapshots it
+    creates. It is None for snapshots not created by SLM (e.g. ILM searchable
+    snapshots, manual snapshots). SLM-managed snapshots (e.g. the periodic
+    cloud-snapshot-* backups) are retired by SLM's own retention, so they are NOT
+    orphans even though no mounted index references them.
+    """
     data = es.get(f"/_snapshot/{repo}/_all?ignore_unavailable=true")
-    return sorted({snap["snapshot"] for snap in data.get("snapshots", [])})
+    out = []
+    for snap in data.get("snapshots", []):
+        name = snap.get("snapshot")
+        if not name:
+            continue
+        slm = (snap.get("metadata") or {}).get("policy")
+        out.append((name, slm))
+    return out
 
 
 def size_via_index_details(es, repo, names, batch):
@@ -433,13 +454,15 @@ def main():
                     help="Per-request read timeout in seconds (default 120).")
     ap.add_argument("--retries", type=int, default=3,
                     help="Retries with exponential backoff on read timeouts / 429 / 5xx (default 3).")
-    ap.add_argument("--per-snapshot", action="store_true")
+    ap.add_argument("--per-snapshot", action="store_true",
+                    help="Print the largest 25 orphans with their size (implies "
+                         "--report-size; use --json for the full list).")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
-    if args.incremental:
-        args.report_size = True  # --incremental only makes sense while reporting size
+    if args.incremental or args.per_snapshot:
+        args.report_size = True  # both only make sense while reporting size
 
     url, api_key = resolve_credentials(args)
     if not url:
@@ -458,13 +481,23 @@ def main():
     all_snaps = list_all_snapshots(es, args.repo)
     sys.stderr.write(f"  total snapshots : {len(all_snaps)}\n")
 
-    orphans = [s for s in all_snaps
-               if s not in in_use and fnmatch.fnmatch(s, args.pattern)]
+    # SLM-managed snapshots (metadata.policy set) are retired by SLM's own retention,
+    # so they are never orphans -- exclude them from the candidate set.
+    slm_managed = {name for name, slm in all_snaps if slm}
+    if slm_managed:
+        sys.stderr.write(f"  SLM-managed (excluded): {len(slm_managed)}\n")
+
+    all_names = sorted({name for name, _ in all_snaps})
+    orphans = [s for s in all_names
+               if s not in in_use
+               and s not in slm_managed
+               and fnmatch.fnmatch(s, args.pattern)]
     sys.stderr.write(f"  orphaned (match): {len(orphans)}\n")
 
     report = {
         "repo": args.repo,
         "pattern": args.pattern,
+        "slm_managed_excluded": len(slm_managed),
         "orphan_count": len(orphans),
         "applied": bool(args.apply),
     }
@@ -560,9 +593,18 @@ def main():
     else:
         print("  DRY-RUN: nothing deleted. Re-run with --apply to delete the above.")
     if args.report_size and args.per_snapshot:
-        print("\n  Largest orphans (by total size):")
-        for row in report["per_snapshot"][:25]:
-            print(f"    {human(row['total_bytes']):>12}  {row['snapshot']}")
+        rows = report["per_snapshot"]
+        has_incr = any("incremental_bytes" in r for r in rows)
+        cols = "total, incremental" if has_incr else "total"
+        shown = min(25, len(rows))
+        print(f"\n  Largest {shown} orphan(s) by size ({cols}):")
+        for row in rows[:25]:
+            size = f"{human(row['total_bytes']):>12}"
+            if has_incr:
+                size += f"  {human(row.get('incremental_bytes', 0)):>12}"
+            print(f"    {size}  {row['snapshot']}")
+        if len(rows) > 25:
+            print(f"    ... and {len(rows) - 25} more (use --json for the full list)")
 
     print_ilm_section(args, report)
 
