@@ -69,6 +69,8 @@ environment variables instead.
 - **Historical leak review** (`--ilm-review-file`) — logs policies that are compliant *now*
   but leaked orphans in the past, with each policy's last-updated date; flags any that
   leaked *after* their last update as **NEEDS REVIEW**.
+- **Frozen-tier usage** (`--frozen-usage`) — estimates what percentage of the frozen tier's
+  searchable-snapshot storage the orphans occupy, to judge whether cleanup is worth it.
 - **SLM-aware** — excludes SLM-managed snapshots from the orphan set.
 - **Safe deletion** (`--apply`) — dry-run by default; requests are batched under the ES HTTP
   request-line limit and retry with backoff on timeouts / `429` / `5xx`.

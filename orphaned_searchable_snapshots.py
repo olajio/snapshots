@@ -101,6 +101,9 @@ Options
                     the past but are currently compliant, with each policy's last-updated
                     date. Policies with an orphan taken AFTER that date are flagged
                     NEEDS REVIEW. Implies --check-ilm.
+  --frozen-usage    Estimate what % of the frozen tier's searchable-snapshot storage the
+                    orphans occupy (also sizes the in-use mounted snapshots, logical).
+                    Implies --report-size.
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -550,12 +553,17 @@ def main():
                          "in the past but are currently compliant, with each policy's last "
                          "update date. Policies with an orphan taken AFTER that date are "
                          "flagged NEEDS REVIEW. Implies --check-ilm.")
+    ap.add_argument("--frozen-usage", action="store_true",
+                    help="Estimate what percentage of the frozen tier's searchable-snapshot "
+                         "storage the orphans occupy (also sizes the in-use mounted snapshots). "
+                         "Uses logical sizes; heavier on clusters with many mounted snapshots. "
+                         "Implies --report-size.")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
-    if args.incremental or args.per_snapshot:
-        args.report_size = True  # both only make sense while reporting size
+    if args.incremental or args.per_snapshot or args.frozen_usage:
+        args.report_size = True  # these only make sense while reporting size
     if args.ilm_review_file:
         args.check_ilm = True  # the review report needs the ILM policy data
 
@@ -650,6 +658,30 @@ def main():
                 for n, v in sorted(per.items(), key=lambda kv: kv[1]["total"], reverse=True)
             ]
 
+    # Optional: what share of the frozen tier's searchable-snapshot storage is orphaned?
+    # Frozen-tier snapshot storage = the snapshots backing mounted (in-use) searchable
+    # indices + the orphans. Sizes are LOGICAL (index_details) so the ratio is a consistent
+    # share of frozen-tier data; the exact freed-on-delete space is the dedup-aware
+    # 'incremental' figure, which can be much smaller.
+    if args.frozen_usage:
+        in_use_names = sorted(in_use)
+        sys.stderr.write(f"Sizing {len(in_use_names)} in-use searchable snapshot(s) for "
+                         f"frozen-tier % (index_details)...\n")
+        in_use_total, _ = size_via_index_details(es, args.repo, in_use_names, args.batch)
+        orphan_total = report.get("total_bytes", 0)
+        frozen_total = orphan_total + in_use_total
+        pct = (100.0 * orphan_total / frozen_total) if frozen_total else 0.0
+        report["frozen_tier"] = {
+            "basis": "logical (index_details)",
+            "in_use_count": len(in_use_names),
+            "in_use_bytes": in_use_total, "in_use_human": human(in_use_total),
+            "orphan_bytes": orphan_total, "orphan_human": human(orphan_total),
+            "total_bytes": frozen_total, "total_human": human(frozen_total),
+            "orphan_pct_of_frozen": round(pct, 2),
+        }
+        sys.stderr.write(f"  frozen-tier orphan share: {pct:.2f}%  "
+                         f"({human(orphan_total)} of {human(frozen_total)})\n")
+
     # Optional: attribute orphans to the offending ILM policies that produced them.
     if args.check_ilm and report.get("offending_ilm_policies"):
         attrib = attribute_orphans(
@@ -701,6 +733,17 @@ def main():
             print("  reclaimable figure.")
         print("  For the exact repository bill, also check the backing object-storage")
         print("  bucket metrics (S3/GCS/Azure).")
+    if "frozen_tier" in report:
+        ft = report["frozen_tier"]
+        print("\n  -- FROZEN-TIER STORAGE (logical) --")
+        print(f"  in-use searchable snapshots : {ft['in_use_human']}  ({ft['in_use_count']} snapshots)")
+        print(f"  orphaned searchable snapshots: {ft['orphan_human']}")
+        print(f"  total frozen-tier snapshots  : {ft['total_human']}")
+        print(f"  >> orphans are {ft['orphan_pct_of_frozen']:.2f}% of frozen-tier "
+              "searchable-snapshot storage (logical)")
+        print("  Note: logical share; space actually freed on deletion is the dedup-aware")
+        print("  'incremental' figure (run --incremental) and can be much smaller when orphans")
+        print("  share blobs with live snapshots.")
     if args.apply:
         print(f"  DELETED {report['deleted']} orphaned snapshot(s).")
     else:
@@ -783,6 +826,16 @@ def write_audit_file(path, args, report, orphans, per):
         w(f"  size method             : {report.get('size_method')}")
     if "deleted" in report:
         w(f"  deleted                 : {report['deleted']}")
+    if "frozen_tier" in report:
+        ft = report["frozen_tier"]
+        w("")
+        w("FROZEN-TIER STORAGE (logical, from index_details)")
+        w(f"  in-use searchable snapshots  : {ft['in_use_human']}  ({ft['in_use_count']} snapshots)")
+        w(f"  orphaned searchable snapshots: {ft['orphan_human']}")
+        w(f"  total frozen-tier snapshots  : {ft['total_human']}")
+        w(f"  orphans are {ft['orphan_pct_of_frozen']:.2f}% of frozen-tier searchable-snapshot storage")
+        w("  (logical share; actual freed space on deletion is the dedup-aware 'incremental'")
+        w("   figure and can be much smaller when orphans share blobs with live snapshots.)")
     w("")
 
     if args.check_ilm:
