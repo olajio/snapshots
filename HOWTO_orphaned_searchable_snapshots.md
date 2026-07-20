@@ -197,6 +197,7 @@ at the cost of the slower `_status` scan.
 | `--audit-file PATH` | — | Write the **full** orphan list + summary/analysis to a text file (screen still shows top 25) |
 | `--ilm-review-file PATH` | — | Log **now-compliant** ILM policies that leaked orphans in the past (with last-updated date); flags those that leaked *after* their last update as **NEEDS REVIEW**. Implies `--check-ilm` |
 | `--frozen-usage` | off | Estimate what **% of the frozen tier's** searchable-snapshot storage the orphans occupy (also sizes the in-use mounted snapshots). Implies `--report-size` |
+| `--frozen-tier-capacity [SIZE]` | — | Report **reclaimable** orphan storage as a **% of total frozen-tier object-store storage** (you provide the capacity). Pass a size inline (e.g. `60TiB`, units GiB/TiB) or with no value to be **prompted**. Implies `--incremental` |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
 | `-h`, `--help` | — | Show help and exit |
@@ -258,6 +259,27 @@ deduplication the space actually reclaimed on deletion is the `--incremental` fi
 can be far smaller when orphans share blobs with live snapshots. Use both together to judge
 whether cleanup is worth it. Note: this sizes every mounted snapshot too, so it is heavier
 on clusters with many (e.g. prod's ~5k).
+
+**Is cleanup worth it? — reclaimable as a % of frozen-tier OBJECT-STORE storage:**
+```bash
+# provide the capacity inline (units GiB or TiB) ...
+./orphaned_searchable_snapshots.py --cluster qa --frozen-tier-capacity 60TiB
+# ... or pass the flag with no value to be prompted at runtime:
+./orphaned_searchable_snapshots.py --cluster qa --frozen-tier-capacity
+```
+Unlike `--frozen-usage` (logical share), this uses the **reclaimable** (`incremental`)
+orphan size as the numerator (so it **implies `--incremental`**) and the **total frozen-tier
+object-store storage** as the denominator — a number you read from the **Elastic Cloud
+console**, since no ES API can supply the object-store bucket size. Output:
+```
+  -- RECLAIMABLE vs FROZEN-TIER OBJECT-STORE STORAGE --
+  frozen-tier object-store storage : 60.00 TiB  (provided)
+  reclaimable (incremental) orphans: 8.47 TiB
+  >> deleting orphans reclaims 14.12% of total frozen-tier object-store storage
+```
+When prompted, enter a value like `60` then the unit (`TiB`/`GiB`, default `TiB`), or type
+`60TiB` directly. Sizes are binary (1 TiB = 1024⁴ bytes). In a piped/non-interactive run you
+must pass the value inline — the prompt needs a TTY.
 
 **Log policies that leaked in the past but look compliant now (and flag re-offenders):**
 ```bash

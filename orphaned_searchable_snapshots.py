@@ -104,6 +104,11 @@ Options
   --frozen-usage    Estimate what % of the frozen tier's searchable-snapshot storage the
                     orphans occupy (also sizes the in-use mounted snapshots, logical).
                     Implies --report-size.
+  --frozen-tier-capacity [SIZE]
+                    Report reclaimable (incremental) orphan storage as a % of the TOTAL
+                    frozen-tier object-store storage. Pass a size inline (e.g. 60TiB,
+                    units GiB/TiB) or give the flag with no value to be prompted. Read the
+                    number from the Elastic Cloud console. Implies --incremental.
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -129,6 +134,10 @@ VALID_CLUSTERS = ("dev", "qa", "ccs", "prod")
 # Snapshot names go in the request URL; keep each request line under Elasticsearch's
 # http.max_initial_line_length (default 4kb / 4096 bytes). 3500 leaves safe margin.
 MAX_URL_BYTES = 3500
+# Sentinel meaning "prompt for the value" when --frozen-tier-capacity is given without one.
+PROMPT_SENTINEL = "__PROMPT__"
+# Binary (1024-based) unit factors, matching the Elastic Cloud console and human().
+CAPACITY_UNITS = {"gib": 1024 ** 3, "gb": 1024 ** 3, "tib": 1024 ** 4, "tb": 1024 ** 4}
 
 
 def human(n):
@@ -494,6 +503,49 @@ def formerly_leaking_policies(orphans, ilm_index, per_sizes=None):
     return results
 
 
+def _parse_capacity(s):
+    """Parse a size string like '60TiB', '60 tib', or '61440 GiB' -> (bytes, 'TiB'/'GiB').
+    A bare number (no unit) returns None so the caller can ask for the unit."""
+    m = re.match(r"^\s*([0-9]*\.?[0-9]+)\s*([a-zA-Z]+)\s*$", s or "")
+    if not m:
+        return None
+    value, unit = float(m.group(1)), m.group(2).lower()
+    if unit not in CAPACITY_UNITS:
+        return None
+    canonical = "TiB" if unit in ("tib", "tb") else "GiB"
+    return int(value * CAPACITY_UNITS[unit]), canonical
+
+
+def resolve_frozen_capacity(arg):
+    """Resolve the frozen-tier object-store capacity from --frozen-tier-capacity.
+
+    arg is: None (feature off), PROMPT_SENTINEL (ask interactively), or a size string.
+    Returns (bytes, unit) or None. Exits with a clear message on bad/missing input.
+    """
+    if arg is None:
+        return None
+    if arg != PROMPT_SENTINEL:
+        parsed = _parse_capacity(arg)
+        if parsed is None:
+            sys.exit(f"ERROR: could not parse --frozen-tier-capacity '{arg}'. "
+                     "Use e.g. '60TiB' or '61440GiB'.")
+        return parsed
+    # Interactive prompt.
+    if not sys.stdin.isatty():
+        sys.exit("ERROR: --frozen-tier-capacity needs a value in non-interactive mode, "
+                 "e.g. --frozen-tier-capacity 60TiB")
+    raw = input("Enter total frozen-tier object-store storage "
+                "(from the Elastic Cloud console): ").strip()
+    parsed = _parse_capacity(raw)
+    if parsed is None and re.match(r"^\s*[0-9]*\.?[0-9]+\s*$", raw):
+        unit = input("Unit? [TiB/GiB] (default TiB): ").strip() or "TiB"
+        parsed = _parse_capacity(f"{raw}{unit}")
+    if parsed is None:
+        sys.exit(f"ERROR: could not parse frozen-tier capacity '{raw}'. "
+                 "Use e.g. '60TiB' or '61440GiB'.")
+    return parsed
+
+
 def resolve_credentials(args):
     """Resolve (es_url, api_key) using flags -> AWS secret -> environment."""
     url = args.es_url
@@ -558,14 +610,28 @@ def main():
                          "storage the orphans occupy (also sizes the in-use mounted snapshots). "
                          "Uses logical sizes; heavier on clusters with many mounted snapshots. "
                          "Implies --report-size.")
+    ap.add_argument("--frozen-tier-capacity", metavar="SIZE", nargs="?", const=PROMPT_SENTINEL,
+                    help="Report reclaimable (incremental) orphan storage as a percentage of "
+                         "the TOTAL frozen-tier object-store storage. Give the size inline "
+                         "(e.g. --frozen-tier-capacity 60TiB, units GiB/TiB) or pass the flag "
+                         "with no value to be prompted at runtime. Read this number from the "
+                         "Elastic Cloud console (the ES API cannot supply it). Implies "
+                         "--incremental.")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
     if args.incremental or args.per_snapshot or args.frozen_usage:
         args.report_size = True  # these only make sense while reporting size
+    if args.frozen_tier_capacity is not None:
+        args.incremental = True   # the numerator is the dedup-aware reclaimable size
+        args.report_size = True
     if args.ilm_review_file:
         args.check_ilm = True  # the review report needs the ILM policy data
+
+    # Resolve (and, if needed, prompt for) the frozen-tier capacity up front, so the
+    # interactive prompt is answered before the potentially long scan begins.
+    frozen_capacity = resolve_frozen_capacity(args.frozen_tier_capacity)
 
     url, api_key = resolve_credentials(args)
     if not url:
@@ -682,6 +748,24 @@ def main():
         sys.stderr.write(f"  frozen-tier orphan share: {pct:.2f}%  "
                          f"({human(orphan_total)} of {human(frozen_total)})\n")
 
+    # Optional: reclaimable orphan bytes as a % of the TOTAL frozen-tier object-store
+    # storage (a number supplied by the user -- the ES API cannot provide it). The
+    # numerator is the dedup-aware 'incremental' size (what actually frees on deletion).
+    if frozen_capacity is not None:
+        cap_bytes, cap_unit = frozen_capacity
+        reclaimable = report.get("incremental_bytes", 0)
+        pct = (100.0 * reclaimable / cap_bytes) if cap_bytes else 0.0
+        report["frozen_reclaim"] = {
+            "capacity_bytes": cap_bytes,
+            "capacity_unit": cap_unit,
+            "capacity_human": human(cap_bytes),
+            "reclaimable_bytes": reclaimable,
+            "reclaimable_human": human(reclaimable),
+            "reclaimable_pct_of_capacity": round(pct, 2),
+        }
+        sys.stderr.write(f"  reclaimable is {pct:.2f}% of frozen-tier object-store storage "
+                         f"({human(reclaimable)} of {human(cap_bytes)})\n")
+
     # Optional: attribute orphans to the offending ILM policies that produced them.
     if args.check_ilm and report.get("offending_ilm_policies"):
         attrib = attribute_orphans(
@@ -744,6 +828,13 @@ def main():
         print("  Note: logical share; space actually freed on deletion is the dedup-aware")
         print("  'incremental' figure (run --incremental) and can be much smaller when orphans")
         print("  share blobs with live snapshots.")
+    if "frozen_reclaim" in report:
+        fr = report["frozen_reclaim"]
+        print("\n  -- RECLAIMABLE vs FROZEN-TIER OBJECT-STORE STORAGE --")
+        print(f"  frozen-tier object-store storage : {fr['capacity_human']}  (provided)")
+        print(f"  reclaimable (incremental) orphans: {fr['reclaimable_human']}")
+        print(f"  >> deleting orphans reclaims {fr['reclaimable_pct_of_capacity']:.2f}% of "
+              "total frozen-tier object-store storage")
     if args.apply:
         print(f"  DELETED {report['deleted']} orphaned snapshot(s).")
     else:
@@ -836,6 +927,14 @@ def write_audit_file(path, args, report, orphans, per):
         w(f"  orphans are {ft['orphan_pct_of_frozen']:.2f}% of frozen-tier searchable-snapshot storage")
         w("  (logical share; actual freed space on deletion is the dedup-aware 'incremental'")
         w("   figure and can be much smaller when orphans share blobs with live snapshots.)")
+    if "frozen_reclaim" in report:
+        fr = report["frozen_reclaim"]
+        w("")
+        w("RECLAIMABLE vs FROZEN-TIER OBJECT-STORE STORAGE")
+        w(f"  frozen-tier object-store storage : {fr['capacity_human']}  (provided)")
+        w(f"  reclaimable (incremental) orphans: {fr['reclaimable_human']}")
+        w(f"  reclaimable is {fr['reclaimable_pct_of_capacity']:.2f}% of total frozen-tier "
+          "object-store storage")
     w("")
 
     if args.check_ilm:
