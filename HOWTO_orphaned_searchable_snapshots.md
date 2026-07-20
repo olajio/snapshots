@@ -196,6 +196,7 @@ at the cost of the slower `_status` scan.
 | `--per-snapshot` | off | Print the largest **25** orphans with their size (implies `--report-size`; use `--json` for all) |
 | `--audit-file PATH` | — | Write the **full** orphan list + summary/analysis to a text file (screen still shows top 25) |
 | `--ilm-review-file PATH` | — | Log **now-compliant** ILM policies that leaked orphans in the past (with last-updated date); flags those that leaked *after* their last update as **NEEDS REVIEW**. Implies `--check-ilm` |
+| `--frozen-usage` | off | Estimate what **% of the frozen tier's** searchable-snapshot storage the orphans occupy (also sizes the in-use mounted snapshots). Implies `--report-size` |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
 | `-h`, `--help` | — | Show help and exit |
@@ -237,6 +238,26 @@ array) — handy for piping into a spreadsheet.
 ./orphaned_searchable_snapshots.py --cluster dev --report-size --check-ilm \
   --audit-file dev_orphans_audit.txt
 ```
+
+**Is cleanup worth it? — orphans as a % of frozen-tier storage:**
+```bash
+./orphaned_searchable_snapshots.py --cluster prod --frozen-usage
+```
+This also sizes the in-use (mounted) searchable snapshots — the live frozen/cold tier data —
+and reports orphans as a share of the total frozen-tier searchable-snapshot storage:
+```
+  -- FROZEN-TIER STORAGE (logical) --
+  in-use searchable snapshots : 180.00 TiB  (4930 snapshots)
+  orphaned searchable snapshots: 51.44 TiB
+  total frozen-tier snapshots  : 231.44 TiB
+  >> orphans are 22.23% of frozen-tier searchable-snapshot storage (logical)
+```
+The **%** uses **logical** sizes (fast; consistent for both sides). ⚠️ It answers "how much
+of the frozen tier's data is orphaned," **not** "how much disk you'd free" — because of
+deduplication the space actually reclaimed on deletion is the `--incremental` figure, which
+can be far smaller when orphans share blobs with live snapshots. Use both together to judge
+whether cleanup is worth it. Note: this sizes every mounted snapshot too, so it is heavier
+on clusters with many (e.g. prod's ~5k).
 
 **Log policies that leaked in the past but look compliant now (and flag re-offenders):**
 ```bash
