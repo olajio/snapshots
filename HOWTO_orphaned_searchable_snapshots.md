@@ -190,7 +190,7 @@ at the cost of the slower `_status` scan.
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
 | `--timeout N` | `120` | Per-request read timeout in seconds |
 | `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
-| `--per-snapshot` | off | With `--report-size`, print the largest orphans individually |
+| `--per-snapshot` | off | List **every** orphan with its individual size (largest first). Implies `--report-size` |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
 | `-h`, `--help` | — | Show help and exit |
@@ -204,10 +204,20 @@ at the cost of the slower `_status` scan.
 ./orphaned_searchable_snapshots.py --cluster prod --pattern '2023.*' --report-size
 ```
 
-**See the biggest offenders:**
+**See the size of every individual orphan (largest first):**
 ```bash
-./orphaned_searchable_snapshots.py --cluster prod --report-size --per-snapshot
+./orphaned_searchable_snapshots.py --cluster prod --per-snapshot
 ```
+`--per-snapshot` implies `--report-size` and lists **every** orphan with its size, e.g.:
+```
+  Per-snapshot size (total), largest first -- 627 orphan(s):
+        42.10 GiB  2026.01.22-.ds-traces-apm-default-...-apm-rollover-30-days-...
+        38.44 GiB  2026.01.21-.ds-traces-apm-default-...-apm-rollover-30-days-...
+        ...
+```
+Add `--incremental` to also show each snapshot's dedup-aware (reclaimable) size. For a
+machine-readable list of every orphan and its size, add `--json` (see the `per_snapshot`
+array) — handy for piping into a spreadsheet or further processing.
 
 **Get the dedup-aware reclaimable size (slower `_status` scan):**
 ```bash

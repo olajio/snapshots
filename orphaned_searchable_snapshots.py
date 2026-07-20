@@ -87,7 +87,8 @@ Options
   --batch N         Max snapshots per request (also bounded by URL length; default 50)
   --timeout N       Per-request read timeout in seconds (default 120)
   --retries N       Retries with backoff on read timeouts / 429 / 5xx (default 3)
-  --per-snapshot    With --report-size, print a per-snapshot breakdown (largest first)
+  --per-snapshot    List every orphan with its individual size (largest first).
+                    Implies --report-size.
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -433,13 +434,15 @@ def main():
                     help="Per-request read timeout in seconds (default 120).")
     ap.add_argument("--retries", type=int, default=3,
                     help="Retries with exponential backoff on read timeouts / 429 / 5xx (default 3).")
-    ap.add_argument("--per-snapshot", action="store_true")
+    ap.add_argument("--per-snapshot", action="store_true",
+                    help="List every orphan with its individual size (largest first). "
+                         "Implies --report-size.")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
-    if args.incremental:
-        args.report_size = True  # --incremental only makes sense while reporting size
+    if args.incremental or args.per_snapshot:
+        args.report_size = True  # both only make sense while reporting size
 
     url, api_key = resolve_credentials(args)
     if not url:
@@ -560,9 +563,16 @@ def main():
     else:
         print("  DRY-RUN: nothing deleted. Re-run with --apply to delete the above.")
     if args.report_size and args.per_snapshot:
-        print("\n  Largest orphans (by total size):")
-        for row in report["per_snapshot"][:25]:
-            print(f"    {human(row['total_bytes']):>12}  {row['snapshot']}")
+        rows = report["per_snapshot"]
+        has_incr = any("incremental_bytes" in r for r in rows)
+        header = "size (total"
+        header += ", incremental)" if has_incr else ")"
+        print(f"\n  Per-snapshot {header}, largest first -- {len(rows)} orphan(s):")
+        for row in rows:
+            size = f"{human(row['total_bytes']):>12}"
+            if has_incr:
+                size += f"  {human(row.get('incremental_bytes', 0)):>12}"
+            print(f"    {size}  {row['snapshot']}")
 
     print_ilm_section(args, report)
 
