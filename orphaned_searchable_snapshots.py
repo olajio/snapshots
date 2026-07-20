@@ -10,6 +10,7 @@ deleted (or its ILM policy changed) without ILM running the delete phase.
 Single tool for the whole workflow:
   * default            -> DRY-RUN: list the orphans, change nothing.
   * --report-size      -> also report how much repository storage they occupy.
+  * --check-ilm        -> also flag ILM policies that will create future orphans.
   * --apply            -> delete the orphans (dry-run unless this is given).
 
 How it works
@@ -80,6 +81,8 @@ Options
   --report-size     Report storage used by the orphans (fast; index_details metadata).
   --incremental     With --report-size, also compute the dedup-aware reclaimable size
                     via _status (slower). Implies --report-size.
+  --check-ilm       Analyse ILM policies and flag culprits that create searchable
+                    snapshots but won't let ILM delete them (source of future orphans).
   --apply           Delete the orphans (without this, the tool is a dry run).
   --batch N         Max snapshots per request (also bounded by URL length; default 50)
   --timeout N       Per-request read timeout in seconds (default 120)
@@ -322,6 +325,40 @@ def delete_snapshots(es, repo, names, batch):
     return deleted
 
 
+def find_offending_ilm_policies(es):
+    """Return the ILM policies that CREATE searchable snapshots but will not let ILM
+    delete them -- the sources of future orphans.
+
+    delete_searchable_snapshot defaults to True, so a policy leaks only when it takes
+    a searchable_snapshot but (a) has no delete phase/action, or (b) sets
+    delete_searchable_snapshot: false. Returns a list of dicts sorted by name.
+    """
+    data = es.get("/_ilm/policy")
+    offending = []
+    for name, body in sorted(data.items()):
+        phases = body.get("policy", {}).get("phases", {})
+        ss_phases = [ph for ph, cfg in phases.items()
+                     if "searchable_snapshot" in cfg.get("actions", {})]
+        if not ss_phases:
+            continue
+        delete_actions = phases.get("delete", {}).get("actions", {})
+        if "delete" not in delete_actions:
+            offending.append({
+                "policy": name, "searchable_snapshot_phases": ss_phases,
+                "reason": "no delete phase -> ILM never deletes the searchable snapshot",
+                "delete_searchable_snapshot": None,
+            })
+        else:
+            dss = delete_actions["delete"].get("delete_searchable_snapshot", True)
+            if dss is False:
+                offending.append({
+                    "policy": name, "searchable_snapshot_phases": ss_phases,
+                    "reason": "delete phase sets delete_searchable_snapshot: false",
+                    "delete_searchable_snapshot": False,
+                })
+    return offending
+
+
 def resolve_credentials(args):
     """Resolve (es_url, api_key) using flags -> AWS secret -> environment."""
     url = args.es_url
@@ -358,6 +395,10 @@ def main():
                     help="With --report-size, also compute the dedup-aware 'incremental' "
                          "(reclaimable) size via the _status API. Slower; can be heavy on "
                          "large repos -- pair with a smaller --batch / larger --timeout.")
+    ap.add_argument("--check-ilm", action="store_true",
+                    help="Also analyse ILM policies and flag 'culprit' policies that create "
+                         "searchable snapshots but won't let ILM delete them (the source of "
+                         "future orphans).")
     ap.add_argument("--apply", action="store_true",
                     help="Delete the orphans (without this, the tool is a dry run).")
     ap.add_argument("--batch", type=int, default=50,
@@ -402,8 +443,19 @@ def main():
         "applied": bool(args.apply),
     }
 
+    # Optional: analyse ILM policies for culprits that will create future orphans.
+    if args.check_ilm:
+        sys.stderr.write("Analysing ILM policies for searchable-snapshot culprits...\n")
+        offending = find_offending_ilm_policies(es)
+        report["offending_ilm_policies"] = offending
+        sys.stderr.write(f"  offending ILM policies: {len(offending)}\n")
+
     if not orphans:
-        print(json.dumps(report, indent=2) if args.json else "No orphaned snapshots found.")
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print("No orphaned snapshots found.")
+            print_ilm_section(args, report)
         return
 
     # List the orphans (to stderr so stdout stays clean for the report / JSON).
@@ -473,6 +525,30 @@ def main():
         print("\n  Largest orphans (by total size):")
         for row in report["per_snapshot"][:25]:
             print(f"    {human(row['total_bytes']):>12}  {row['snapshot']}")
+
+    print_ilm_section(args, report)
+
+
+def print_ilm_section(args, report):
+    """Print the offending-ILM-policies section (text mode) if --check-ilm ran."""
+    if not args.check_ilm:
+        return
+    offending = report.get("offending_ilm_policies", [])
+    print("\n==================== OFFENDING ILM POLICIES ==========================")
+    if not offending:
+        print("  None. Every policy that creates searchable snapshots also lets ILM")
+        print("  delete them (delete phase present, delete_searchable_snapshot not false).")
+        print("======================================================================")
+        return
+    print(f"  {len(offending)} policy(ies) create searchable snapshots that ILM will NOT")
+    print("  clean up -- these are the source of future orphans:")
+    for p in offending:
+        phases = ",".join(p["searchable_snapshot_phases"])
+        print(f"    - {p['policy']}  (searchable_snapshot in: {phases})")
+        print(f"        {p['reason']}")
+    print("======================================================================")
+    print("  Fix: add a delete phase with delete_searchable_snapshot: true (its default),")
+    print("  or set it to true where it is currently false.")
 
 
 if __name__ == "__main__":

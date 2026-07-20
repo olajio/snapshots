@@ -67,9 +67,12 @@ present-day misconfiguration. They require manual snapshot cleanup, e.g.:
   `--report-size` reports the logical `total` size fast via the Get Snapshot
   `index_details` metadata (add `--incremental` for the dedup-aware reclaimable size via
   the heavier `_status` API); `--pattern '2023.*'` scopes by name; `--per-snapshot` and
-  `--json` control output. Requests are batched under the ES HTTP request-line limit
-  (avoids `too_long_http_line_exception`) and retry with backoff on read timeouts / 429 /
-  5xx (`--timeout`, `--retries`).
+  `--json` control output. `--check-ilm` additionally analyses the cluster's ILM policies
+  live and flags culprits that create searchable snapshots but won't let ILM delete them
+  (no delete phase, or `delete_searchable_snapshot: false`) -- the source of future orphans.
+  Requests are batched under the ES HTTP request-line limit (avoids
+  `too_long_http_line_exception`) and retry with backoff on read timeouts / 429 / 5xx
+  (`--timeout`, `--retries`).
 
 - `HOWTO_orphaned_searchable_snapshots.md` -- usage guide for the tool above.
 
