@@ -17,9 +17,12 @@ measure their storage, and `--apply` to delete them.
 
 1. Finds the snapshots **currently in use** — referenced by a mounted searchable-snapshot
    index (via each index's `index.store.snapshot.snapshot_name` setting).
-2. Lists **every** snapshot in the repository.
-3. Computes **orphans** = all snapshots − in-use snapshots (optionally filtered by a name
-   pattern).
+2. Lists **every** snapshot in the repository, noting which are **SLM-managed** (their
+   `metadata.policy` names an SLM policy).
+3. Computes **orphans** = all snapshots − in-use snapshots − **SLM-managed snapshots**
+   (optionally filtered by a name pattern). SLM-managed snapshots (e.g. the periodic
+   `cloud-snapshot-*` backups) are retired by SLM's own retention, so they are **not**
+   orphans even though no mounted index references them.
 4. `--report-size`: sums the orphans' storage.
    - **Default (fast):** uses the Get Snapshot API's `index_details` (snapshot metadata) to
      report **`total` (logical size)** — the sum of each snapshot's index sizes. Because
@@ -190,7 +193,7 @@ at the cost of the slower `_status` scan.
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
 | `--timeout N` | `120` | Per-request read timeout in seconds |
 | `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
-| `--per-snapshot` | off | List **every** orphan with its individual size (largest first). Implies `--report-size` |
+| `--per-snapshot` | off | Print the largest **25** orphans with their size (implies `--report-size`; use `--json` for all) |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
 | `-h`, `--help` | — | Show help and exit |
@@ -204,20 +207,22 @@ at the cost of the slower `_status` scan.
 ./orphaned_searchable_snapshots.py --cluster prod --pattern '2023.*' --report-size
 ```
 
-**See the size of every individual orphan (largest first):**
+**See the biggest orphans with their sizes (largest 25):**
 ```bash
 ./orphaned_searchable_snapshots.py --cluster prod --per-snapshot
 ```
-`--per-snapshot` implies `--report-size` and lists **every** orphan with its size, e.g.:
+`--per-snapshot` implies `--report-size` and prints the **largest 25** orphans with their
+size, e.g.:
 ```
-  Per-snapshot size (total), largest first -- 627 orphan(s):
+  Largest 25 orphan(s) by size (total):
         42.10 GiB  2026.01.22-.ds-traces-apm-default-...-apm-rollover-30-days-...
         38.44 GiB  2026.01.21-.ds-traces-apm-default-...-apm-rollover-30-days-...
         ...
+    ... and 602 more (use --json for the full list)
 ```
-Add `--incremental` to also show each snapshot's dedup-aware (reclaimable) size. For a
-machine-readable list of every orphan and its size, add `--json` (see the `per_snapshot`
-array) — handy for piping into a spreadsheet or further processing.
+Add `--incremental` to also show each snapshot's dedup-aware (reclaimable) size. For the
+**full** per-orphan list (every snapshot + size), add `--json` (see the `per_snapshot`
+array) — handy for piping into a spreadsheet.
 
 **Get the dedup-aware reclaimable size (slower `_status` scan):**
 ```bash
