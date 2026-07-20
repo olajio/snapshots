@@ -195,6 +195,7 @@ at the cost of the slower `_status` scan.
 | `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
 | `--per-snapshot` | off | Print the largest **25** orphans with their size (implies `--report-size`; use `--json` for all) |
 | `--audit-file PATH` | — | Write the **full** orphan list + summary/analysis to a text file (screen still shows top 25) |
+| `--ilm-review-file PATH` | — | Log **now-compliant** ILM policies that leaked orphans in the past (with last-updated date); flags those that leaked *after* their last update as **NEEDS REVIEW**. Implies `--check-ilm` |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
 | `-h`, `--help` | — | Show help and exit |
@@ -236,6 +237,18 @@ array) — handy for piping into a spreadsheet.
 ./orphaned_searchable_snapshots.py --cluster dev --report-size --check-ilm \
   --audit-file dev_orphans_audit.txt
 ```
+
+**Log policies that leaked in the past but look compliant now (and flag re-offenders):**
+```bash
+./orphaned_searchable_snapshots.py --cluster dev --report-size \
+  --ilm-review-file dev_ilm_review.txt
+```
+This finds ILM policies that **currently** have `delete_searchable_snapshot` enabled yet
+still have orphaned snapshots attributed to them — i.e. they leaked before being fixed. The
+file lists each with its **last-updated date**, orphan count/size, and orphan date range.
+Any policy with an orphan **taken after** its last update is flagged **NEEDS REVIEW**
+(it may still be leaking, or its index was deleted outside ILM). `--ilm-review-file`
+implies `--check-ilm`; add `--report-size` to include orphan sizes.
 The audit file contains a header (timestamp, cluster, repo, mode), a summary (total /
 in-use / SLM-excluded / orphan counts and sizes), the offending ILM policies, explanatory
 notes, and **every** orphan with its size (largest first). Combine with `--incremental`
