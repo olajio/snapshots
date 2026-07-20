@@ -1,16 +1,16 @@
 ======================================================================
 ORPHANED SEARCHABLE SNAPSHOT AUDIT
 ======================================================================
-Generated (UTC) : 2026-07-20T04:09:11Z
+Generated (UTC) : 2026-07-20T14:17:30Z
 Cluster         : prod
 Repository      : found-snapshots
 Name pattern    : *
 Mode            : DRY-RUN (nothing deleted)
 
 SUMMARY
-  total snapshots in repo : 6318
-  in-use (mounted)        : 4926
-  SLM-managed (excluded)  : 101
+  total snapshots in repo : 6323
+  in-use (mounted)        : 4930
+  SLM-managed (excluded)  : 102
   orphaned snapshots      : 1291
   total (logical)         : 51.44 TiB  (56561079673803 bytes)
   incremental (reclaim)   : 220.47 GiB  (236730901560 bytes)

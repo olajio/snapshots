@@ -1,0 +1,102 @@
+======================================================================
+ILM POLICIES THAT APPEAR TO HAVE LEAKED SEARCHABLE SNAPSHOTS
+(currently compliant -- delete_searchable_snapshot is NOT disabled)
+======================================================================
+Generated (UTC) : 2026-07-20T14:13:47Z
+Cluster         : dev
+
+A policy is listed here if it currently HAS a delete phase with
+delete_searchable_snapshot enabled, yet orphaned searchable snapshots exist whose
+name embeds this policy -- i.e. it leaked in the past but looks compliant now
+(likely updated after the leak).
+
+'NEEDS REVIEW' = at least one leaked snapshot was TAKEN (snapshot date) AFTER the
+policy's last update, so it may still be leaking, or the index was deleted outside
+ILM. Those should be reviewed by a human.
+
+NEEDS REVIEW -- leaked AFTER last update (14):
+  - apm-rollover-30-days
+      last updated : 2025-08-22T13:44:17.770Z
+      orphans      : 127  (2.00 TiB)
+      orphan dates : 2023-03-21 .. 2026-02-04
+      !! latest orphan 2026-02-04 is AFTER last update 2025-08-22 -> REVIEW
+  - traces-apm.rum_traces-default_policy
+      last updated : 2025-08-22T13:03:08.863Z
+      orphans      : 6  (99.20 GiB)
+      orphan dates : 2025-11-10 .. 2026-01-27
+      !! latest orphan 2026-01-27 is AFTER last update 2025-08-22 -> REVIEW
+  - .deprecation-indexing-ilm-policy
+      last updated : 2025-08-04T12:37:33.422Z
+      orphans      : 3  (412.29 KiB)
+      orphan dates : 2026-05-13 .. 2026-06-17
+      !! latest orphan 2026-06-17 is AFTER last update 2025-08-04 -> REVIEW
+  - metricbeat
+      last updated : 2023-03-28T10:40:02.362Z
+      orphans      : 2  (452 B)
+      orphan dates : 2023-04-27 .. 2023-05-17
+      !! latest orphan 2023-05-17 is AFTER last update 2023-03-28 -> REVIEW
+  - metrics-apm.service_destination_10m_metrics-default_policy
+      last updated : 2025-08-22T13:48:14.965Z
+      orphans      : 2  (286.69 MiB)
+      orphan dates : 2026-06-29 .. 2026-07-13
+      !! latest orphan 2026-07-13 is AFTER last update 2025-08-22 -> REVIEW
+  - metrics-apm.service_destination_60m_metrics-default_policy
+      last updated : 2025-08-22T13:49:49.133Z
+      orphans      : 2  (159.81 MiB)
+      orphan dates : 2026-06-19 .. 2026-07-19
+      !! latest orphan 2026-07-19 is AFTER last update 2025-08-22 -> REVIEW
+  - metrics-apm.service_summary_60m_metrics-default_policy
+      last updated : 2025-08-22T13:52:40.431Z
+      orphans      : 2  (5.97 MiB)
+      orphan dates : 2026-06-19 .. 2026-07-19
+      !! latest orphan 2026-07-19 is AFTER last update 2025-08-22 -> REVIEW
+  - metrics-apm.service_transaction_60m_metrics-default_policy
+      last updated : 2025-08-22T13:55:29.057Z
+      orphans      : 2  (217.17 MiB)
+      orphan dates : 2026-06-19 .. 2026-07-19
+      !! latest orphan 2026-07-19 is AFTER last update 2025-08-22 -> REVIEW
+  - metrics-apm.transaction_60m_metrics-default_policy
+      last updated : 2025-08-22T13:57:09.256Z
+      orphans      : 2  (1.37 GiB)
+      orphan dates : 2026-06-19 .. 2026-07-19
+      !! latest orphan 2026-07-19 is AFTER last update 2025-08-22 -> REVIEW
+  - filebeat-mt-rnd
+      last updated : 2023-03-28T10:42:29.007Z
+      orphans      : 1  (226 B)
+      orphan dates : 2023-05-18 .. 2023-05-18
+      !! latest orphan 2023-05-18 is AFTER last update 2023-03-28 -> REVIEW
+  - metricbeat-logstash
+      last updated : 2026-03-16T14:08:47.757Z
+      orphans      : 1  (606.87 MiB)
+      orphan dates : 2026-03-21 .. 2026-03-21
+      !! latest orphan 2026-03-21 is AFTER last update 2026-03-16 -> REVIEW
+  - metrics-apm.service_summary_10m_metrics-default_policy
+      last updated : 2025-08-22T13:50:42.815Z
+      orphans      : 1  (8.83 MiB)
+      orphan dates : 2026-07-13 .. 2026-07-13
+      !! latest orphan 2026-07-13 is AFTER last update 2025-08-22 -> REVIEW
+  - metrics-apm.service_transaction_10m_metrics-default_policy
+      last updated : 2025-08-22T13:53:40.608Z
+      orphans      : 1  (202.48 MiB)
+      orphan dates : 2026-07-13 .. 2026-07-13
+      !! latest orphan 2026-07-13 is AFTER last update 2025-08-22 -> REVIEW
+  - metrics-apm.transaction_10m_metrics-default_policy
+      last updated : 2025-08-22T13:56:05.326Z
+      orphans      : 1  (811.17 MiB)
+      orphan dates : 2026-07-13 .. 2026-07-13
+      !! latest orphan 2026-07-13 is AFTER last update 2025-08-22 -> REVIEW
+
+LIKELY ALREADY FIXED -- all leaked snapshots predate last update (12):
+  - filebeat  (last updated 2024-03-08; orphans 19, 1.19 GiB; dates 2023-03-21 .. 2023-05-21)
+  - metricbeat-8.11.0-mt-rnd  (last updated 2025-08-04; orphans 14, 567.65 GiB; dates 2024-02-26 .. 2024-12-23)
+  - filebeat-8.11.0-mt-rnd  (last updated 2025-08-22; orphans 7, 250.67 GiB; dates 2024-08-10 .. 2024-12-22)
+  - filebeat-scripts  (last updated 2025-08-22; orphans 7, 211.86 GiB; dates 2024-07-03 .. 2024-12-17)
+  - metricbeat-7.17.9  (last updated 2025-08-22; orphans 5, 72.91 GiB; dates 2023-05-11 .. 2024-12-21)
+  - test_policy  (last updated 2025-08-04; orphans 5, 23.72 KiB; dates 2024-07-02 .. 2024-07-03)
+  - filebeat-7.17.9  (last updated 2025-08-04; orphans 4, 1.51 GiB; dates 2024-02-28 .. 2024-12-21)
+  - metricbeat-8.8.1-mt-rnd  (last updated 2025-08-04; orphans 3, 121.59 GiB; dates 2023-09-23 .. 2023-10-03)
+  - metricbeat-7.17.9-mt-sql  (last updated 2025-08-04; orphans 2, 80.02 MiB; dates 2024-12-16 .. 2024-12-21)
+  - filebeat-7.17.5  (last updated 2023-05-30; orphans 1, 226 B; dates 2023-03-21 .. 2023-03-21)
+  - filebeat-7.17.9-mt-rnd  (last updated 2025-08-04; orphans 1, 23.09 MiB; dates 2024-12-22 .. 2024-12-22)
+  - hazeltree-logs  (last updated 2025-08-04; orphans 1, 226 B; dates 2023-03-21 .. 2023-03-21)
+

@@ -1,0 +1,31 @@
+======================================================================
+ILM POLICIES THAT APPEAR TO HAVE LEAKED SEARCHABLE SNAPSHOTS
+(currently compliant -- delete_searchable_snapshot is NOT disabled)
+======================================================================
+Generated (UTC) : 2026-07-20T14:17:30Z
+Cluster         : prod
+
+A policy is listed here if it currently HAS a delete phase with
+delete_searchable_snapshot enabled, yet orphaned searchable snapshots exist whose
+name embeds this policy -- i.e. it leaked in the past but looks compliant now
+(likely updated after the leak).
+
+'NEEDS REVIEW' = at least one leaked snapshot was TAKEN (snapshot date) AFTER the
+policy's last update, so it may still be leaking, or the index was deleted outside
+ILM. Those should be reviewed by a human.
+
+NEEDS REVIEW -- leaked AFTER last update (2):
+  - metricbeat-8.8.1-mt-prd
+      last updated : 2023-08-10T08:17:23.596Z
+      orphans      : 2  (523.11 MiB)
+      orphan dates : 2023-10-18 .. 2023-10-20
+      !! latest orphan 2023-10-20 is AFTER last update 2023-08-10 -> REVIEW
+  - metricbeat-8.8.1-mt-tst
+      last updated : 2023-08-10T08:17:44.336Z
+      orphans      : 1  (215.12 MiB)
+      orphan dates : 2023-10-18 .. 2023-10-18
+      !! latest orphan 2023-10-18 is AFTER last update 2023-08-10 -> REVIEW
+
+LIKELY ALREADY FIXED -- all leaked snapshots predate last update (1):
+  - apm-rollover-30-days  (last updated 2026-05-29; orphans 1279, 51.44 TiB; dates 2023-04-19 .. 2026-02-04)
+
