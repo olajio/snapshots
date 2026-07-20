@@ -1,38 +1,79 @@
 # Searchable Snapshot Orphan Cleanup
 
 Tooling to find, size, and clean up **orphaned searchable snapshots** in Elasticsearch /
-Elastic Cloud deployments, and to catch the ILM policies that create them.
+Elastic Cloud deployments, catch the ILM policies that create them, and quantify how much
+storage a cleanup would actually reclaim.
 
-## Background
+---
 
-When an index moves to the cold/frozen tier via ILM, ILM takes a **searchable snapshot**
-in the snapshot repository (`found-snapshots`). ILM is supposed to delete that snapshot in
-its **delete** phase via `delete_searchable_snapshot: true` (the default). If a policy
-takes a searchable snapshot but has **no delete phase**, or sets
-`delete_searchable_snapshot: false`, the snapshot is left behind when its index is removed
-— an **orphan** that keeps costing object-storage money forever. (See the Elastic support
-case summarised in `searchable_snapshot_ilm_findings.md`.)
+## Why this project matters (motivation)
 
-## What counts as an "orphan"
+Searchable snapshots back the **cold and frozen data tiers** — they let you keep large
+amounts of older data queryable at a fraction of the cost of hot storage, because the data
+lives in cheap **object storage** (S3/GCS/Azure) instead of on local SSD.
+
+The catch: those snapshots are supposed to be **deleted by ILM** when their index ages out.
+When they aren't (a misconfigured policy, a policy edited after the fact, or an index
+deleted by hand), the snapshot is **orphaned** — it stays in the repository forever,
+serving no index and **quietly accruing object-storage cost**. Across a fleet these
+accumulate into terabytes of dead data, and they also:
+
+- **inflate the storage bill** for data nobody can query,
+- **slow down snapshot/SLM operations** and repository housekeeping as the snapshot count grows,
+- **clutter the snapshot list**, making real backups harder to reason about.
+
+This project makes the problem **measurable and safe to fix**: it identifies exactly which
+snapshots are orphaned, how much space they *actually* reclaim (accounting for
+deduplication), which ILM policies are the root cause, and — with a capacity figure you
+provide — **what percentage of your frozen-tier storage the cleanup would free**, so you can
+decide whether it's worth the effort before doing anything destructive.
+
+---
+
+## Concepts (glossary)
+
+- **Data tiers** — hot / warm / cold / frozen. Older, less-queried data is moved to cheaper
+  tiers. **Cold** and **frozen** use *searchable snapshots*.
+- **Searchable snapshot** — an index whose data lives in a **snapshot** in the repository and
+  is queried directly from there. **Frozen** indices are *partially mounted*: the data stays
+  in object storage and the frozen nodes keep only a small **local cache**.
+- **Snapshot repository** (`found-snapshots`) — the object-storage bucket where all snapshots
+  (and thus all frozen-tier data) physically live. This is what you're billed for.
+- **ILM (Index Lifecycle Management)** — policies that move an index through phases
+  (hot → … → frozen → delete). The `searchable_snapshot` action creates the snapshot; the
+  `delete` phase's `delete_searchable_snapshot` option (default **`true`**) removes it.
+- **SLM (Snapshot Lifecycle Management)** — separate, scheduled *backups* (e.g. the periodic
+  `cloud-snapshot-*` snapshots). SLM manages its own retention, so **SLM snapshots are never
+  orphans**.
+- **Orphaned searchable snapshot** — a searchable snapshot that no live index references and
+  that ILM never deleted. See the exact definition below.
+- **Logical vs. incremental (reclaimable) size** — snapshots are **deduplicated**: they share
+  underlying blobs. A snapshot's **logical** size counts its full contents (over-counts
+  shared data); its **incremental** size is what it *uniquely* added — i.e. the space
+  actually freed if you delete it. **Reclaimable = incremental.**
+
+### What counts as an "orphan"
 
 A snapshot is an orphan when **all** of these hold:
 
 - it lives in the snapshot repository, **and**
 - it is **not referenced by any mounted** searchable-snapshot index (its index is gone), **and**
-- it is **not managed by SLM** — Snapshot Lifecycle Management stamps `metadata.policy` on
-  snapshots it creates (e.g. the periodic `cloud-snapshot-*` backups), and SLM retires
-  those on its own retention schedule, so they are **never** orphans.
+- it is **not managed by SLM** (no `metadata.policy`) — SLM retires its own snapshots.
+
+---
 
 ## What's in this repo
 
 | Path | Purpose |
 |------|---------|
-| `orphaned_searchable_snapshots.py` | The main tool — find, size, delete orphans, and flag culprit ILM policies, against a live cluster. |
-| `HOWTO_orphaned_searchable_snapshots.md` | Detailed usage guide for the tool (options, recipes, troubleshooting). |
+| `orphaned_searchable_snapshots.py` | The main tool — find, size, delete orphans, flag culprit ILM policies, and estimate reclaimable storage, against a live cluster. |
+| `HOWTO_orphaned_searchable_snapshots.md` | Detailed usage guide (options, recipes, troubleshooting). |
 | `analyze_ilm.py` | Offline auditor — parses exported `GET _ilm/policy` JSON files and flags leaking policies. |
 | `corrected_ilm_policies/` | Ready-to-apply `PUT _ilm/policy` bodies that add a delete phase to the leaking policies. |
 | `searchable_snapshot_ilm_findings.md` | The full audit write-up and background. |
 | `dev_ilm_policy`, `qa_ilm_policy`, `prod_ilm_policy`, `ccs_ilm_policy` | Exported ILM policy snapshots per cluster (input to `analyze_ilm.py`). |
+
+---
 
 ## Quick start
 
@@ -45,51 +86,152 @@ pass `--apply`.
 
 # List orphans + their storage + the culprit ILM policies, in one pass
 ./orphaned_searchable_snapshots.py --cluster qa --report-size --check-ilm
-
-# Show the largest 25 orphans with sizes
-./orphaned_searchable_snapshots.py --cluster qa --per-snapshot
-
-# Delete only the 2023 orphans (review first without --apply!)
-./orphaned_searchable_snapshots.py --cluster qa --pattern '2023.*' --apply
 ```
 
-`--cluster {dev,qa,ccs,prod}` loads the endpoint and API key from AWS Secrets Manager
-secret `elastic/kibana/dataview_cleanup_<cluster>` (keys `es_url` and `es_api_key`).
-Authentication is **API key only**. See the HOWTO for supplying credentials via flags or
-environment variables instead.
+`--cluster {dev,qa,ccs,prod}` loads the endpoint and API key from AWS Secrets Manager secret
+`elastic/kibana/dataview_cleanup_<cluster>` (keys `es_url` and `es_api_key`). Authentication
+is **API key only**.
+
+---
 
 ## Key capabilities
 
 - **Credentials from AWS Secrets Manager** (`--cluster`) — nothing secret on the command
   line; boto3 if available, else the `aws` CLI.
 - **Fast, timeout-safe sizing** (`--report-size`) via the Get Snapshot `index_details`
-  metadata; `--incremental` for the dedup-aware reclaimable figure via `_status`.
-- **ILM culprit analysis** (`--check-ilm`) — flags policies that create searchable
-  snapshots but won't let ILM delete them, with the count/size of orphans each has produced.
-- **Historical leak review** (`--ilm-review-file`) — logs policies that are compliant *now*
-  but leaked orphans in the past, with each policy's last-updated date; flags any that
-  leaked *after* their last update as **NEEDS REVIEW**.
-- **Frozen-tier usage** (`--frozen-usage`) — estimates what percentage of the frozen tier's
-  searchable-snapshot storage the orphans occupy, to judge whether cleanup is worth it.
+  metadata; `--incremental` for the dedup-aware **reclaimable** figure via `_status`.
+- **ILM culprit analysis** (`--check-ilm`) — flags policies that create searchable snapshots
+  but won't let ILM delete them, with the count/size of orphans each has produced.
+- **Historical leak review** (`--ilm-review-file`) — logs policies compliant *now* that
+  leaked in the past (with last-updated date); flags any that leaked *after* their last
+  update as **NEEDS REVIEW**.
+- **Frozen-tier share** — two related "is it worth it?" views:
+  - `--frozen-usage`: orphans as a % of the frozen tier's **logical** searchable-snapshot
+    storage (also sizes the in-use mounted snapshots; computed from ES metadata).
+  - `--frozen-tier-capacity`: **reclaimable** orphan storage as a % of the **total
+    frozen-tier object-store storage** you provide (see below).
 - **SLM-aware** — excludes SLM-managed snapshots from the orphan set.
-- **Safe deletion** (`--apply`) — dry-run by default; requests are batched under the ES HTTP
-  request-line limit and retry with backoff on timeouts / `429` / `5xx`.
-- **Audit records** (`--audit-file PATH`) — writes the full orphan list plus summary and
-  analysis to a text file while the screen still shows only the top 25.
+- **Audit records** (`--audit-file`) — full orphan list + summary/analysis to a text file
+  (screen still shows the top 25).
+- **Safe deletion** (`--apply`) — dry-run by default; requests batched under the ES HTTP
+  request-line limit and retried with backoff on timeouts / `429` / `5xx`.
+
+---
+
+## Reclaimable as a % of frozen-tier storage
+
+`incremental` tells you the **bytes** a cleanup frees. To decide if it's *worth it*, you
+usually want that as a **share of your total frozen-tier storage**. That total lives in the
+**object-store bucket** and **cannot be read from any Elasticsearch API** (node stats only
+report each frozen node's small local cache disk, not the object store). So you supply it —
+read it from the **Elastic Cloud console** — and the tool reports:
+
+> reclaimable (`incremental`) ÷ your provided capacity × 100
+
+```bash
+# provide the capacity inline (units: GiB or TiB)
+./orphaned_searchable_snapshots.py --cluster qa --frozen-tier-capacity 60TiB
+
+# or be prompted for it at runtime (pass the flag with no value)
+./orphaned_searchable_snapshots.py --cluster qa --frozen-tier-capacity
+```
+
+`--frozen-tier-capacity` implies `--incremental` (the numerator must be the reclaimable
+figure). Sizes use binary units (1 TiB = 1024⁴ bytes), matching the Cloud console.
+(`--frozen-usage` answers the related but different question of the orphans' **logical**
+share and needs no capacity input.)
+
+---
+
+## Sample commands (all options)
+
+```bash
+# ---- discovery (read-only) ----
+# dry-run: list orphans only
+./orphaned_searchable_snapshots.py --cluster dev
+
+# fast size (logical) of the orphans
+./orphaned_searchable_snapshots.py --cluster dev --report-size
+
+# dedup-aware reclaimable size (slower _status scan; tune batch/timeout on big repos)
+./orphaned_searchable_snapshots.py --cluster dev --incremental --batch 20 --timeout 300
+
+# largest 25 orphans with sizes
+./orphaned_searchable_snapshots.py --cluster dev --per-snapshot
+
+# scope to a year
+./orphaned_searchable_snapshots.py --cluster dev --pattern '2023.*' --report-size
+
+# ---- ILM analysis ----
+# flag policies that will keep creating orphans
+./orphaned_searchable_snapshots.py --cluster dev --check-ilm
+
+# log now-compliant policies that leaked before (flags post-update re-leaks)
+./orphaned_searchable_snapshots.py --cluster dev --report-size \
+  --ilm-review-file dev_ilm_review.txt
+
+# ---- worth-it decision ----
+# orphans as a % of frozen-tier LOGICAL searchable-snapshot storage
+./orphaned_searchable_snapshots.py --cluster dev --frozen-usage
+
+# reclaimable as a % of the frozen-tier OBJECT-STORE capacity (from Cloud console)
+./orphaned_searchable_snapshots.py --cluster dev --frozen-tier-capacity 60TiB
+
+# ---- everything in one audited pass ----
+./orphaned_searchable_snapshots.py --cluster dev \
+  --incremental --check-ilm \
+  --frozen-tier-capacity 60TiB \
+  --ilm-review-file dev_ilm_review.txt \
+  --audit-file dev_orphans_audit.txt 2>&1 | tee dev_run.log
+
+# ---- credentials without --cluster ----
+./orphaned_searchable_snapshots.py --es-url https://host:9243 --api-key "$KEY" --report-size
+ES_URL=... ES_API_KEY=... ./orphaned_searchable_snapshots.py --report-size
+# custom AWS secret name / region
+./orphaned_searchable_snapshots.py --secret-name my/secret --region us-east-1 --report-size
+
+# ---- machine-readable output ----
+./orphaned_searchable_snapshots.py --cluster dev --report-size --check-ilm --json > dev.json
+
+# ---- deletion (destructive; review the dry-run first) ----
+# delete ALL orphans (recommended: whole set, since partial deletes underperform)
+./orphaned_searchable_snapshots.py --cluster dev --apply --audit-file dev_deleted.txt
+# delete only 2023 orphans
+./orphaned_searchable_snapshots.py --cluster dev --pattern '2023.*' --apply
+```
+
+Run `./orphaned_searchable_snapshots.py --help` for the complete flag list.
+
+---
 
 ## Required API-key privileges
 
-- Reporting / listing: `monitor`, `view_index_metadata`
-- `--check-ilm`: `read_ilm`
+- Reporting / listing / sizing: `monitor`, `view_index_metadata`
+- `--check-ilm` / `--ilm-review-file`: `read_ilm`
 - `--apply` (delete): `manage` / `cluster:admin/snapshot/delete`
+
+---
+
+## Interpreting the numbers (important)
+
+- **`total (logical)`** over-counts blobs shared between snapshots — an upper bound.
+- **`incremental` (reclaimable)** is the dedup-aware estimate of space actually freed. On
+  heavily-shared data these differ a lot (e.g. a repo showing 51 TiB logical may only reclaim
+  ~220 GiB because most blobs are pinned by live snapshots).
+- The **exact** freed space is the object-store bucket size before vs. after deletion.
+- To realize the full reclaim, delete the **whole** orphan set — partial (`--pattern`)
+  deletes can free far less when a shared "base" snapshot stays behind.
+
+---
 
 ## Fixing the root cause
 
-Finding and deleting orphans is only half the job — the leaking ILM policies will keep
-creating new ones. Use `--check-ilm` to identify them, then apply a corrected policy (add a
-delete phase with `delete_searchable_snapshot: true`). Two ready-made examples live in
-`corrected_ilm_policies/`; review the delete-phase `min_age` against your retention needs
-before applying.
+Deleting orphans is only half the job — leaking ILM policies keep making new ones. Use
+`--check-ilm` to identify them, then apply a corrected policy (add a delete phase with
+`delete_searchable_snapshot: true`). Ready-made examples live in `corrected_ilm_policies/`;
+review the delete-phase `min_age` against your retention needs before applying.
+
+---
 
 ## Full documentation
 
