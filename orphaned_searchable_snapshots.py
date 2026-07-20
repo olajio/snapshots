@@ -18,10 +18,17 @@ How it works
    searchable-snapshot indices (index.store.snapshot.snapshot_name).
 2. List every snapshot in the repository.
 3. Orphans = all snapshots - in-use snapshots (optionally filtered by --pattern).
-4. --report-size: query the _status API and sum
-     - total.size_in_bytes        (full logical size)
-     - incremental.size_in_bytes  (dedup-aware -> best estimate of space reclaimed)
+4. --report-size: sum the orphans' storage. By default this uses the Get Snapshot
+   API's index_details (snapshot metadata) for the total logical size -- fast and
+   safe on large repos. Add --incremental for the dedup-aware "reclaimable" size
+   from the _status API (slower/heavier; --incremental implies --report-size).
 5. --apply: delete the orphans.
+
+Why not always use _status? The _status API reads every shard's file listing from
+the repository (object storage) and is very slow on large repos -- on the QA repo it
+timed out. index_details reads small per-index metadata blobs instead, so the fast
+path avoids that. All requests also retry with backoff on read timeouts / 429 / 5xx
+(see --timeout / --retries).
 
 Snapshot names are placed in the request URL for both _status and DELETE. Because
 Elasticsearch caps the HTTP request line at http.max_initial_line_length (default
@@ -70,9 +77,13 @@ Options
   --api-key KEY     API key, "encoded" value (overrides secret and ES_API_KEY)
   --repo NAME       Snapshot repository (default: found-snapshots)
   --pattern GLOB    Only act on orphans whose name matches this glob (default: '*')
-  --report-size     Report storage used by the orphans (read-only, heavy).
+  --report-size     Report storage used by the orphans (fast; index_details metadata).
+  --incremental     With --report-size, also compute the dedup-aware reclaimable size
+                    via _status (slower). Implies --report-size.
   --apply           Delete the orphans (without this, the tool is a dry run).
   --batch N         Max snapshots per request (also bounded by URL length; default 50)
+  --timeout N       Per-request read timeout in seconds (default 120)
+  --retries N       Retries with backoff on read timeouts / 429 / 5xx (default 3)
   --per-snapshot    With --report-size, print a per-snapshot breakdown (largest first)
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
@@ -85,8 +96,10 @@ import argparse
 import fnmatch
 import json
 import os
+import socket
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -169,12 +182,18 @@ def fetch_secret_creds(secret_name, region):
     return es_url, es_api_key
 
 
+# HTTP status codes worth retrying (transient / overloaded), rather than aborting.
+RETRYABLE_STATUS = {429, 502, 503, 504}
+
+
 class ESClient:
-    def __init__(self, url, api_key, insecure=False):
+    def __init__(self, url, api_key, insecure=False, timeout=120, retries=3):
         if not api_key:
             sys.exit("ERROR: no API key resolved. Use --cluster (AWS Secrets Manager), "
                      "--api-key, or the ES_API_KEY environment variable.")
         self.base = url.rstrip("/")
+        self.timeout = timeout
+        self.retries = retries
         self.headers = {
             "Content-Type": "application/json",
             "Authorization": f"ApiKey {api_key}",
@@ -187,15 +206,34 @@ class ESClient:
 
     def _request(self, method, path):
         req = urllib.request.Request(self.base + path, headers=self.headers, method=method)
-        try:
-            with urllib.request.urlopen(req, context=self.ctx, timeout=300) as resp:
-                body = resp.read().decode()
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")
-            sys.exit(f"ERROR: {method} {path} -> HTTP {e.code}\n{body}")
-        except urllib.error.URLError as e:
-            sys.exit(f"ERROR: {method} {path} -> {e.reason}")
+        last_err = None
+        for attempt in range(self.retries + 1):
+            try:
+                with urllib.request.urlopen(req, context=self.ctx, timeout=self.timeout) as resp:
+                    body = resp.read().decode()
+                    return json.loads(body) if body else {}
+            except urllib.error.HTTPError as e:
+                if e.code in RETRYABLE_STATUS and attempt < self.retries:
+                    last_err = f"HTTP {e.code}"
+                else:
+                    body = e.read().decode(errors="replace")
+                    sys.exit(f"ERROR: {method} {path} -> HTTP {e.code}\n{body}")
+            except (socket.timeout, TimeoutError) as e:
+                last_err = f"read timed out after {self.timeout}s"
+                if attempt >= self.retries:
+                    sys.exit(f"ERROR: {method} {path} -> {last_err} (after {self.retries + 1} attempts).\n"
+                             "Try a smaller --batch, a larger --timeout, or scope with --pattern.")
+            except urllib.error.URLError as e:
+                # urllib wraps socket timeouts here too; retry those, fail others.
+                if isinstance(e.reason, (socket.timeout, TimeoutError)) and attempt < self.retries:
+                    last_err = f"read timed out after {self.timeout}s"
+                else:
+                    sys.exit(f"ERROR: {method} {path} -> {e.reason}")
+            # Exponential backoff before the next attempt: 2s, 4s, 8s, ...
+            backoff = 2 ** (attempt + 1)
+            sys.stderr.write(f"  (retry {attempt + 1}/{self.retries} after {last_err}; waiting {backoff}s)\n")
+            time.sleep(backoff)
+        return {}
 
     def get(self, path):
         return self._request("GET", path)
@@ -222,8 +260,37 @@ def list_all_snapshots(es, repo):
     return sorted({snap["snapshot"] for snap in data.get("snapshots", [])})
 
 
-def size_snapshots(es, repo, names, batch):
-    """Return (total_bytes, incremental_bytes, per_snapshot dict) via _status."""
+def size_via_index_details(es, repo, names, batch):
+    """Fast sizing: total (logical) size per snapshot from the Get Snapshot API's
+    index_details (snapshot metadata), NOT the heavy _status shard scan.
+
+    Returns (total_bytes, per_snapshot dict) where per[name] = {"total": bytes}.
+    index_details reads small per-index metadata blobs, so it is far cheaper than
+    _status and does not time out on large repositories. It does not expose the
+    dedup-aware 'incremental' figure -- use --incremental (size_via_status) for that.
+    """
+    overhead = len(f"/_snapshot/{repo}/") + len("?index_details=true&ignore_unavailable=true")
+    total = 0
+    per = {}
+    done = 0
+    for chunk in url_batches(names, overhead, batch):
+        csv = ",".join(chunk)
+        data = es.get(f"/_snapshot/{repo}/{csv}?index_details=true&ignore_unavailable=true")
+        for snap in data.get("snapshots", []):
+            t = sum(idx.get("size_in_bytes", 0)
+                    for idx in snap.get("index_details", {}).values())
+            total += t
+            per[snap.get("snapshot")] = {"total": t}
+        done += len(chunk)
+        sys.stderr.write(f"  ...sized {done}/{len(names)}\n")
+    return total, per
+
+
+def size_via_status(es, repo, names, batch):
+    """Precise sizing via _status: returns (total_bytes, incremental_bytes, per).
+    per[name] = {"total": bytes, "incremental": bytes}. The _status API reads
+    per-shard file listings from the repository and is SLOW/heavy on large repos --
+    it is opt-in via --incremental and benefits from a smaller --batch."""
     overhead = len(f"/_snapshot/{repo}/") + len("/_status?ignore_unavailable=true")
     total = incr = 0
     per = {}
@@ -285,21 +352,34 @@ def main():
     ap.add_argument("--repo", default="found-snapshots")
     ap.add_argument("--pattern", default="*")
     ap.add_argument("--report-size", action="store_true",
-                    help="Report storage used by the orphans (read-only, heavy).")
+                    help="Report storage used by the orphans (read-only). Fast: uses the "
+                         "Get Snapshot index_details metadata, not the heavy _status scan.")
+    ap.add_argument("--incremental", action="store_true",
+                    help="With --report-size, also compute the dedup-aware 'incremental' "
+                         "(reclaimable) size via the _status API. Slower; can be heavy on "
+                         "large repos -- pair with a smaller --batch / larger --timeout.")
     ap.add_argument("--apply", action="store_true",
                     help="Delete the orphans (without this, the tool is a dry run).")
     ap.add_argument("--batch", type=int, default=50,
                     help="Max snapshots per request (also bounded by URL length).")
+    ap.add_argument("--timeout", type=int, default=120,
+                    help="Per-request read timeout in seconds (default 120).")
+    ap.add_argument("--retries", type=int, default=3,
+                    help="Retries with exponential backoff on read timeouts / 429 / 5xx (default 3).")
     ap.add_argument("--per-snapshot", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
 
+    if args.incremental:
+        args.report_size = True  # --incremental only makes sense while reporting size
+
     url, api_key = resolve_credentials(args)
     if not url:
         sys.exit("ERROR: no Elasticsearch endpoint resolved. Use --cluster "
                  "(AWS Secrets Manager), --es-url, or the ES_URL environment variable.")
-    es = ESClient(url, api_key=api_key, insecure=args.insecure)
+    es = ESClient(url, api_key=api_key, insecure=args.insecure,
+                  timeout=args.timeout, retries=args.retries)
 
     mode = "APPLY (delete)" if args.apply else "DRY-RUN"
     sys.stderr.write(f"Repo    : {args.repo}\nPattern : {args.pattern}\nMode    : {mode}\n")
@@ -332,19 +412,26 @@ def main():
 
     # Optional: size the orphans.
     if args.report_size:
-        sys.stderr.write(f"Sizing {len(orphans)} orphan(s) via _status (batch<= {args.batch})...\n")
-        total, incr, per = size_snapshots(es, args.repo, orphans, args.batch)
+        if args.incremental:
+            sys.stderr.write(f"Sizing {len(orphans)} orphan(s) via _status "
+                             f"(dedup-aware, batch<= {args.batch})...\n")
+            total, incr, per = size_via_status(es, args.repo, orphans, args.batch)
+            report["incremental_bytes"] = incr
+            report["incremental_human"] = human(incr)
+        else:
+            sys.stderr.write(f"Sizing {len(orphans)} orphan(s) via index_details "
+                             f"(fast, batch<= {args.batch})...\n")
+            total, per = size_via_index_details(es, args.repo, orphans, args.batch)
         report.update({
             "measured_count": len(per),
             "total_bytes": total,
             "total_human": human(total),
-            "incremental_bytes": incr,
-            "incremental_human": human(incr),
+            "size_method": "status" if args.incremental else "index_details",
         })
         if args.per_snapshot:
             report["per_snapshot"] = [
-                {"snapshot": n, "total_bytes": v["total"],
-                 "incremental_bytes": v["incremental"]}
+                dict({"snapshot": n, "total_bytes": v["total"]},
+                     **({"incremental_bytes": v["incremental"]} if "incremental" in v else {}))
                 for n, v in sorted(per.items(), key=lambda kv: kv[1]["total"], reverse=True)
             ]
 
@@ -364,12 +451,20 @@ def main():
     print(f"  orphaned snapshots : {len(orphans)}")
     if args.report_size:
         print(f"  total (logical)    : {report['total_human']}   ({report['total_bytes']} bytes)")
-        print(f"  incremental (free) : {report['incremental_human']}   ({report['incremental_bytes']} bytes)")
+        if args.incremental:
+            print(f"  incremental (free) : {report['incremental_human']}   ({report['incremental_bytes']} bytes)")
     print("======================================================================")
     if args.report_size:
-        print("  'incremental (free)' is the dedup-aware estimate of space freed by")
-        print("  deleting these snapshots. For the exact repository bill, also check the")
-        print("  backing object-storage bucket metrics (S3/GCS/Azure).")
+        print(f"  size method        : {report['size_method']}")
+        if args.incremental:
+            print("  'incremental (free)' is the dedup-aware estimate of space freed by")
+            print("  deleting these snapshots.")
+        else:
+            print("  'total (logical)' sums each snapshot's index sizes (upper bound; shared")
+            print("  blobs counted once per snapshot). Add --incremental for the dedup-aware")
+            print("  reclaimable figure.")
+        print("  For the exact repository bill, also check the backing object-storage")
+        print("  bucket metrics (S3/GCS/Azure).")
     if args.apply:
         print(f"  DELETED {report['deleted']} orphaned snapshot(s).")
     else:

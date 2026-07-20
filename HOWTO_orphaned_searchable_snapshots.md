@@ -20,12 +20,25 @@ measure their storage, and `--apply` to delete them.
 2. Lists **every** snapshot in the repository.
 3. Computes **orphans** = all snapshots − in-use snapshots (optionally filtered by a name
    pattern).
-4. `--report-size`: calls the `_status` API and sums two figures:
-   - **`total` (logical size)** — the full size of each snapshot. Because snapshots share
-     deduplicated blobs, summing this **overcounts** shared data (upper bound).
-   - **`incremental` (reclaimable)** — bytes each snapshot *uniquely* added; the
-     **dedup-aware estimate of what you actually free** by deleting the orphans.
+4. `--report-size`: sums the orphans' storage.
+   - **Default (fast):** uses the Get Snapshot API's `index_details` (snapshot metadata) to
+     report **`total` (logical size)** — the sum of each snapshot's index sizes. Because
+     snapshots share deduplicated blobs, this **overcounts** shared data (upper bound). This
+     path reads small metadata blobs, so it is fast and does not time out on large repos.
+   - **`--incremental` (opt-in, slower):** additionally queries the `_status` API for the
+     **dedup-aware `incremental` (reclaimable)** size — bytes each snapshot *uniquely*
+     added; the best estimate of what you actually free by deleting the orphans. `_status`
+     is heavy (it scans every shard's file list in the repository), so use it deliberately.
 5. `--apply`: deletes the orphans.
+
+### Why the default changed from `_status` to `index_details`
+
+`--report-size` originally always used `_status`, which reads **every shard's file listing
+from object storage** — on the QA repo (627 orphans) that **timed out** mid-run. The fast
+default now reads per-index metadata via `index_details` instead, which is dramatically
+cheaper. `--incremental` still offers the precise `_status` figure when you need it. All
+requests also **retry with exponential backoff** on read timeouts / `429` / `5xx` (tunable
+via `--timeout` and `--retries`).
 
 ### Request batching (why the tool no longer errors with HTTP 400)
 
@@ -137,11 +150,14 @@ Example `--report-size` output:
   name pattern       : *
   orphaned snapshots : 64
   total (logical)    : 3.42 TiB   (3761...bytes)
-  incremental (free) : 3.11 TiB   (3420...bytes)
 ======================================================================
+  size method        : index_details
   ...
   DRY-RUN: nothing deleted. Re-run with --apply to delete the above.
 ```
+
+Add `--incremental` to also get the dedup-aware reclaimable figure (`incremental (free)`),
+at the cost of the slower `_status` scan.
 
 > Progress and the per-orphan list go to **stderr**; the final report / JSON goes to
 > **stdout**, so `--json > report.json` produces a clean file.
@@ -159,9 +175,12 @@ Example `--report-size` output:
 | `--api-key KEY` | — | API key (overrides secret and `ES_API_KEY`) |
 | `--repo NAME` | `found-snapshots` | Snapshot repository |
 | `--pattern GLOB` | `*` | Only act on orphans matching this shell glob |
-| `--report-size` | off | Report storage used by the orphans (read-only, heavy) |
+| `--report-size` | off | Report storage used by the orphans (fast; `index_details` metadata) |
+| `--incremental` | off | With `--report-size`, also compute the dedup-aware reclaimable size via `_status` (slower). Implies `--report-size` |
 | `--apply` | off | **Delete** the orphans (without it, dry-run) |
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
+| `--timeout N` | `120` | Per-request read timeout in seconds |
+| `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
 | `--per-snapshot` | off | With `--report-size`, print the largest orphans individually |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
@@ -179,6 +198,12 @@ Example `--report-size` output:
 **See the biggest offenders:**
 ```bash
 ./orphaned_searchable_snapshots.py --cluster prod --report-size --per-snapshot
+```
+
+**Get the dedup-aware reclaimable size (slower `_status` scan):**
+```bash
+# on a big repo, pair with a smaller batch and larger timeout
+./orphaned_searchable_snapshots.py --cluster qa --incremental --batch 20 --timeout 300
 ```
 
 **Save a JSON report (clean stdout):**
@@ -204,9 +229,13 @@ Example `--report-size` output:
 
 ## 7. Interpreting the numbers
 
-- Report **`incremental (free)`** as the expected savings — it accounts for deduplication
-  between snapshots. For the force-merged searchable snapshots here there is usually little
-  sharing, so `total` and `incremental` tend to be close.
+- **`total (logical)`** (the default, from `index_details`) sums each snapshot's index
+  sizes. It **overcounts** blobs shared between snapshots, so treat it as an upper bound.
+- **`incremental (free)`** (only with `--incremental`, from `_status`) is the dedup-aware
+  estimate of space actually freed by deleting the orphans — report this as the expected
+  savings. For the force-merged searchable snapshots here there is usually little sharing,
+  so `total` and `incremental` tend to be close, which is why the fast `total` is a good
+  proxy day-to-day.
 - For the **exact repository bill**, cross-check the backing object-storage bucket metrics
   (AWS S3 `BucketSizeBytes`, or the GCS/Azure equivalent) for the deployment's repository
   path — ground truth that sidesteps dedup-counting.
@@ -217,9 +246,12 @@ Example `--report-size` output:
 
 - **Dry-run by default.** Nothing is deleted unless you pass `--apply`. Always run once
   without `--apply` (optionally with `--report-size`) and review the orphan list first.
-- The `_status` API is **heavy and blocking**. Requests are already batched by count and
-  URL length; if you see contention with regular SLM snapshots, lower `--batch` (e.g.
-  `--batch 20`) and/or scope with `--pattern`.
+- **Sizing is fast by default.** `--report-size` uses `index_details` metadata, which is
+  cheap even for hundreds of orphans. Only `--incremental` uses the heavy `_status` scan.
+- **Timeouts are handled.** Every request retries with exponential backoff on read timeouts
+  and `429`/`5xx`. Tune with `--timeout` (per-request seconds) and `--retries`. If
+  `--incremental` on a huge repo still struggles, lower `--batch` (e.g. `--batch 20`),
+  raise `--timeout`, and/or scope with `--pattern`.
 - Deletion is irreversible. The tool only deletes snapshots that are **not referenced by
   any mounted index** — but a dry-run review is still recommended before `--apply`.
 
@@ -231,6 +263,7 @@ Example `--report-size` output:
 |---------|--------------------|
 | `error: unrecognized arguments: --cluster` | You're running an old copy — pull the latest. |
 | `too_long_http_line_exception` / HTTP 400 on `_status` or DELETE | Fixed by URL-length batching; if it recurs on an unusual repo, lower `--batch`. |
+| `read timed out` during sizing | The default `index_details` sizing avoids the heavy `_status` scan that caused this. If using `--incremental`, lower `--batch`, raise `--timeout`, or scope with `--pattern`. Requests already auto-retry. |
 | `ERROR: no Elasticsearch endpoint resolved...` | Pass `--cluster`, `--es-url`, or export `ES_URL`. |
 | `ERROR: no API key resolved...` | Pass `--cluster`, `--api-key`, or export `ES_API_KEY`. |
 | `ERROR: AWS secret '...' is missing key(s): es_api_key` | Add both `es_url` and `es_api_key` to the secret JSON. |
