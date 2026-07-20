@@ -69,7 +69,9 @@ present-day misconfiguration. They require manual snapshot cleanup, e.g.:
   the heavier `_status` API); `--pattern '2023.*'` scopes by name; `--per-snapshot` and
   `--json` control output. `--check-ilm` additionally analyses the cluster's ILM policies
   live and flags culprits that create searchable snapshots but won't let ILM delete them
-  (no delete phase, or `delete_searchable_snapshot: false`) -- the source of future orphans.
+  (no delete phase, or `delete_searchable_snapshot: false`) -- the source of future orphans --
+  and reports the count (and, with `--report-size`, the size) of current orphans
+  attributable to each culprit policy.
   Requests are batched under the ES HTTP request-line limit (avoids
   `too_long_http_line_exception`) and retry with backoff on read timeouts / 429 / 5xx
   (`--timeout`, `--retries`).

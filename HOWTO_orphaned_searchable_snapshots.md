@@ -33,7 +33,10 @@ measure their storage, and `--apply` to delete them.
    **culprit policies** — ones that create searchable snapshots but won't let ILM delete
    them, i.e. the source of *future* orphans. A policy is flagged when it has a
    `searchable_snapshot` action but either has **no delete phase**, or its delete phase sets
-   **`delete_searchable_snapshot: false`** (the default is `true`).
+   **`delete_searchable_snapshot: false`** (the default is `true`). For each culprit it also
+   reports **how many current orphans came from that policy** (and, with `--report-size`,
+   **their total size**) by matching the ILM-policy name embedded in each snapshot name
+   (`{date}-{index}-{ilm-policy}-{uuid}`).
 6. `--apply`: deletes the orphans.
 
 ### Why the default changed from `_status` to `index_details`
@@ -219,18 +222,26 @@ at the cost of the slower `_status` scan.
 ./orphaned_searchable_snapshots.py --cluster qa --report-size --check-ilm
 ```
 
-Example `--check-ilm` output:
+Example `--report-size --check-ilm` output (per-policy orphan counts and sizes):
 ```
 ==================== OFFENDING ILM POLICIES ==========================
   2 policy(ies) create searchable snapshots that ILM will NOT
   clean up -- these are the source of future orphans:
-    - solarwinds-test  (searchable_snapshot in: frozen)
-        no delete phase -> ILM never deletes the searchable snapshot
-    - cost  (searchable_snapshot in: frozen)
+    - metricbeat-7.13.4  (searchable_snapshot in: cold,frozen)
         delete phase sets delete_searchable_snapshot: false
+        orphaned snapshots from this policy: 84  (612.40 GiB)
+    - apm-rollover-30-days  (searchable_snapshot in: frozen)
+        no delete phase -> ILM never deletes the searchable snapshot
+        orphaned snapshots from this policy: 210  (1.90 TiB)
 ======================================================================
+  total orphaned storage attributable to these policies: 2.49 TiB
+  Fix: add a delete phase with delete_searchable_snapshot: true (its default),
+  or set it to true where it is currently false.
 ```
-Requires the API key to have `read_ilm` (or `manage_ilm`) cluster privilege.
+Without `--report-size` the size line is omitted and only per-policy counts are shown.
+Orphans whose embedded name doesn't match any culprit policy (e.g. `cloud-snapshot-*` or
+policies already fixed) are not attributed to any policy here. Requires the API key to have
+`read_ilm` (or `manage_ilm`) cluster privilege.
 
 **Save a JSON report (clean stdout):**
 ```bash
