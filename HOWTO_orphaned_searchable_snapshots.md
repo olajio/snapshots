@@ -29,7 +29,12 @@ measure their storage, and `--apply` to delete them.
      **dedup-aware `incremental` (reclaimable)** size — bytes each snapshot *uniquely*
      added; the best estimate of what you actually free by deleting the orphans. `_status`
      is heavy (it scans every shard's file list in the repository), so use it deliberately.
-5. `--apply`: deletes the orphans.
+5. `--check-ilm`: also analyses the cluster's ILM policies (`GET _ilm/policy`) and flags
+   **culprit policies** — ones that create searchable snapshots but won't let ILM delete
+   them, i.e. the source of *future* orphans. A policy is flagged when it has a
+   `searchable_snapshot` action but either has **no delete phase**, or its delete phase sets
+   **`delete_searchable_snapshot: false`** (the default is `true`).
+6. `--apply`: deletes the orphans.
 
 ### Why the default changed from `_status` to `index_details`
 
@@ -58,8 +63,8 @@ trips that limit.
   credentials with `secretsmanager:GetSecretValue` on the relevant secret. The tool prefers
   boto3 and falls back to the `aws` CLI automatically.
 - Network access to the Elasticsearch endpoint.
-- An API key that can call `_snapshot`, `_settings`, and `_status`. Deleting additionally
-  needs `manage`/`cluster:admin/snapshot/delete` privileges.
+- An API key that can call `_snapshot`, `_settings`, and `_status`. `--check-ilm` also needs
+  `read_ilm`; deleting (`--apply`) needs `manage`/`cluster:admin/snapshot/delete`.
 
 > Authentication is **API key only** — basic auth is not supported.
 
@@ -110,7 +115,7 @@ POST /_security/api_key
   "name": "orphan-snapshot-tool",
   "role_descriptors": {
     "snap_admin": {
-      "cluster": ["monitor", "manage"],
+      "cluster": ["monitor", "read_ilm", "manage"],
       "index":   [{ "names": ["*"], "privileges": ["view_index_metadata"] }]
     }
   }
@@ -177,6 +182,7 @@ at the cost of the slower `_status` scan.
 | `--pattern GLOB` | `*` | Only act on orphans matching this shell glob |
 | `--report-size` | off | Report storage used by the orphans (fast; `index_details` metadata) |
 | `--incremental` | off | With `--report-size`, also compute the dedup-aware reclaimable size via `_status` (slower). Implies `--report-size` |
+| `--check-ilm` | off | Also flag ILM policies that create searchable snapshots but won't let ILM delete them (source of future orphans) |
 | `--apply` | off | **Delete** the orphans (without it, dry-run) |
 | `--batch N` | `50` | Max snapshots per request (also bounded by URL length) |
 | `--timeout N` | `120` | Per-request read timeout in seconds |
@@ -205,6 +211,26 @@ at the cost of the slower `_status` scan.
 # on a big repo, pair with a smaller batch and larger timeout
 ./orphaned_searchable_snapshots.py --cluster qa --incremental --batch 20 --timeout 300
 ```
+
+**Scan for orphans AND flag the ILM policies causing future ones:**
+```bash
+./orphaned_searchable_snapshots.py --cluster qa --check-ilm
+# combine with sizing in one pass
+./orphaned_searchable_snapshots.py --cluster qa --report-size --check-ilm
+```
+
+Example `--check-ilm` output:
+```
+==================== OFFENDING ILM POLICIES ==========================
+  2 policy(ies) create searchable snapshots that ILM will NOT
+  clean up -- these are the source of future orphans:
+    - solarwinds-test  (searchable_snapshot in: frozen)
+        no delete phase -> ILM never deletes the searchable snapshot
+    - cost  (searchable_snapshot in: frozen)
+        delete phase sets delete_searchable_snapshot: false
+======================================================================
+```
+Requires the API key to have `read_ilm` (or `manage_ilm`) cluster privilege.
 
 **Save a JSON report (clean stdout):**
 ```bash
