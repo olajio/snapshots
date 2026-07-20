@@ -101,10 +101,12 @@ is **API key only**.
 - **Fast, timeout-safe sizing** (`--report-size`) via the Get Snapshot `index_details`
   metadata; `--incremental` for the dedup-aware **reclaimable** figure via `_status`.
 - **ILM culprit analysis** (`--check-ilm`) — flags policies that create searchable snapshots
-  but won't let ILM delete them, with the count/size of orphans each has produced.
-- **Historical leak review** (`--ilm-review-file`) — logs policies compliant *now* that
-  leaked in the past (with last-updated date); flags any that leaked *after* their last
-  update as **NEEDS REVIEW**.
+  but won't let ILM delete them, with the count/size of orphans each has produced. It also
+  **writes a ready-to-apply corrected policy** for each culprit to
+  `corrected_ilm_policies/<cluster>/<policy>.json` (adds/fixes `delete_searchable_snapshot`).
+- **ILM review file** (`--ilm-review-file`) — one file covering **both** the currently
+  offending policies **and** policies compliant *now* that leaked in the past (with
+  last-updated date); flags any that leaked *after* their last update as **NEEDS REVIEW**.
 - **Frozen-tier share** — two related "is it worth it?" views:
   - `--frozen-usage`: orphans as a % of the frozen tier's **logical** searchable-snapshot
     storage (also sizes the in-use mounted snapshots; computed from ES metadata).
@@ -140,6 +142,10 @@ read it from the **Elastic Cloud console** — and the tool reports:
 figure). Sizes use binary units (1 TiB = 1024⁴ bytes), matching the Cloud console.
 (`--frozen-usage` answers the related but different question of the orphans' **logical**
 share and needs no capacity input.)
+
+If you run with **`--incremental` but omit `--frozen-tier-capacity`**, the tool **prompts**
+you for the capacity so you still get the reclaimable-% report — press Enter to skip it. (In
+a piped/non-interactive run there's no prompt; pass the value inline instead.)
 
 ---
 
@@ -226,10 +232,16 @@ Run `./orphaned_searchable_snapshots.py --help` for the complete flag list.
 
 ## Fixing the root cause
 
-Deleting orphans is only half the job — leaking ILM policies keep making new ones. Use
-`--check-ilm` to identify them, then apply a corrected policy (add a delete phase with
-`delete_searchable_snapshot: true`). Ready-made examples live in `corrected_ilm_policies/`;
-review the delete-phase `min_age` against your retention needs before applying.
+Deleting orphans is only half the job — leaking ILM policies keep making new ones. Running
+with `--check-ilm` **auto-generates a corrected `PUT _ilm/policy` body** for every culprit at
+`corrected_ilm_policies/<cluster>/<policy>.json`:
+
+- a delete phase that sets `delete_searchable_snapshot: false` → flipped to `true`;
+- a policy with **no** delete phase → a delete phase is added with
+  `delete_searchable_snapshot: true` and a **placeholder `min_age` of `365d`** — **review
+  that retention against your needs before applying.**
+
+Apply one with `PUT _ilm/policy/<policy>` using the generated JSON as the body.
 
 ---
 

@@ -88,6 +88,8 @@ Options
                     via _status (slower). Implies --report-size.
   --check-ilm       Analyse ILM policies and flag culprits that create searchable
                     snapshots but won't let ILM delete them (source of future orphans).
+                    Also writes a corrected PUT _ilm/policy body for each culprit to
+                    corrected_ilm_policies/<cluster>/<policy>.json.
   --apply           Delete the orphans (without this, the tool is a dry run).
   --batch N         Max snapshots per request (also bounded by URL length; default 50)
   --timeout N       Per-request read timeout in seconds (default 120)
@@ -97,10 +99,10 @@ Options
   --audit-file PATH Write the FULL orphan list plus summary/analysis to a text file (the
                     on-screen output still shows only the top 25). For audit records.
   --ilm-review-file PATH
-                    Write a report of ILM policies that appear to have leaked orphans in
-                    the past but are currently compliant, with each policy's last-updated
-                    date. Policies with an orphan taken AFTER that date are flagged
-                    NEEDS REVIEW. Implies --check-ilm.
+                    Write a review of ILM policies: the CURRENTLY-offending ones (that will
+                    create new orphans) plus policies compliant now that appear to have
+                    leaked in the past (with last-updated date; post-update leaks flagged
+                    NEEDS REVIEW). Implies --check-ilm.
   --frozen-usage    Estimate what % of the frozen tier's searchable-snapshot storage the
                     orphans occupy (also sizes the in-use mounted snapshots, logical).
                     Implies --report-size.
@@ -108,7 +110,9 @@ Options
                     Report reclaimable (incremental) orphan storage as a % of the TOTAL
                     frozen-tier object-store storage. Pass a size inline (e.g. 60TiB,
                     units GiB/TiB) or give the flag with no value to be prompted. Read the
-                    number from the Elastic Cloud console. Implies --incremental.
+                    number from the Elastic Cloud console. Implies --incremental. If you run
+                    with --incremental but omit this flag, you are prompted for the capacity
+                    (skippable).
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -117,6 +121,7 @@ fall back to the `aws` CLI.
 """
 
 import argparse
+import copy
 import datetime
 import fnmatch
 import json
@@ -376,6 +381,7 @@ def analyze_ilm_policies(es):
         'ss_phases': [...],            # phases with a searchable_snapshot action
         'offending': bool,             # currently leaks (no delete phase / dss:false)
         'reason': str|None,            # why it is offending, else None
+        'phases': {...},               # the policy's full phases (for building a fix)
     }
 
     delete_searchable_snapshot defaults to True, so a policy currently leaks only when it
@@ -403,8 +409,68 @@ def analyze_ilm_policies(es):
             "ss_phases": ss_phases,
             "offending": offending,
             "reason": reason,
+            "phases": phases,
         }
     return out
+
+
+# Placeholder retention for a delete phase we ADD to a policy that has none. It must be a
+# valid ILM duration so the file is applyable as-is, but it is a guess -- review before use.
+DEFAULT_DELETE_MIN_AGE = "365d"
+
+
+def build_corrected_policy(phases):
+    """Return a corrected PUT _ilm/policy body ({"policy": {"phases": ...}}) that stops the
+    policy leaking searchable snapshots, plus a note describing what was changed.
+
+    - delete phase with delete_searchable_snapshot: false  -> flip it to true.
+    - no delete phase / no delete action                   -> add a delete phase with
+      delete_searchable_snapshot: true (min_age is a placeholder to review).
+    Returns (body_dict, note_str).
+    """
+    fixed = copy.deepcopy(phases)
+    delete_actions = fixed.get("delete", {}).get("actions", {})
+    if "delete" in delete_actions:
+        prev = delete_actions["delete"].get("delete_searchable_snapshot", True)
+        delete_actions["delete"]["delete_searchable_snapshot"] = True
+        note = ("set delete_searchable_snapshot: true in the existing delete phase "
+                f"(was {json.dumps(prev)})")
+    else:
+        fixed["delete"] = {
+            "min_age": DEFAULT_DELETE_MIN_AGE,
+            "actions": {"delete": {"delete_searchable_snapshot": True}},
+        }
+        note = (f"added a delete phase (min_age {DEFAULT_DELETE_MIN_AGE} -- REVIEW this "
+                "retention) with delete_searchable_snapshot: true")
+    return {"policy": {"phases": fixed}}, note
+
+
+def write_corrected_policies(cluster, ilm_index):
+    """Write a corrected PUT _ilm/policy body for every offending policy to
+    corrected_ilm_policies/<cluster>/<policy>.json. Returns list of (path, note)."""
+    offenders = {n: v for n, v in ilm_index.items() if v["offending"]}
+    if not offenders:
+        return []
+    out_dir = os.path.join("corrected_ilm_policies", cluster)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write(f"WARNING: could not create '{out_dir}': {e}\n")
+        return []
+    written = []
+    for name, info in sorted(offenders.items()):
+        body, note = build_corrected_policy(info.get("phases", {}))
+        path = os.path.join(out_dir, f"{name}.json")
+        try:
+            with open(path, "w") as fh:
+                json.dump(body, fh, indent=2)
+                fh.write("\n")
+            written.append((path, note))
+        except OSError as e:
+            sys.stderr.write(f"WARNING: could not write '{path}': {e}\n")
+    if written:
+        sys.stderr.write(f"Wrote {len(written)} corrected ILM policy file(s) to {out_dir}/\n")
+    return written
 
 
 def offending_from_index(ilm_index):
@@ -516,11 +582,33 @@ def _parse_capacity(s):
     return int(value * CAPACITY_UNITS[unit]), canonical
 
 
+def _prompt_capacity(skippable):
+    """Prompt on the terminal for the frozen-tier object-store capacity.
+    Returns (bytes, unit), or None if skippable and the user presses Enter / it can't parse.
+    Exits when required (not skippable) and the input is unusable."""
+    suffix = " (or press Enter to skip the reclaimable-% report)" if skippable else ""
+    raw = input("Enter total frozen-tier object-store storage from the Elastic Cloud "
+                f"console{suffix}: ").strip()
+    if not raw and skippable:
+        return None
+    parsed = _parse_capacity(raw)
+    if parsed is None and re.match(r"^\s*[0-9]*\.?[0-9]+\s*$", raw):
+        unit = input("Unit? [TiB/GiB] (default TiB): ").strip() or "TiB"
+        parsed = _parse_capacity(f"{raw}{unit}")
+    if parsed is None:
+        if skippable:
+            sys.stderr.write("  (could not parse capacity; skipping the reclaimable-% report)\n")
+            return None
+        sys.exit(f"ERROR: could not parse frozen-tier capacity '{raw}'. "
+                 "Use e.g. '60TiB' or '61440GiB'.")
+    return parsed
+
+
 def resolve_frozen_capacity(arg):
     """Resolve the frozen-tier object-store capacity from --frozen-tier-capacity.
 
-    arg is: None (feature off), PROMPT_SENTINEL (ask interactively), or a size string.
-    Returns (bytes, unit) or None. Exits with a clear message on bad/missing input.
+    arg is: None (flag absent), PROMPT_SENTINEL (flag with no value -> ask), or a size
+    string. Returns (bytes, unit) or None. Exits with a clear message on bad/missing input.
     """
     if arg is None:
         return None
@@ -530,20 +618,10 @@ def resolve_frozen_capacity(arg):
             sys.exit(f"ERROR: could not parse --frozen-tier-capacity '{arg}'. "
                      "Use e.g. '60TiB' or '61440GiB'.")
         return parsed
-    # Interactive prompt.
     if not sys.stdin.isatty():
         sys.exit("ERROR: --frozen-tier-capacity needs a value in non-interactive mode, "
                  "e.g. --frozen-tier-capacity 60TiB")
-    raw = input("Enter total frozen-tier object-store storage "
-                "(from the Elastic Cloud console): ").strip()
-    parsed = _parse_capacity(raw)
-    if parsed is None and re.match(r"^\s*[0-9]*\.?[0-9]+\s*$", raw):
-        unit = input("Unit? [TiB/GiB] (default TiB): ").strip() or "TiB"
-        parsed = _parse_capacity(f"{raw}{unit}")
-    if parsed is None:
-        sys.exit(f"ERROR: could not parse frozen-tier capacity '{raw}'. "
-                 "Use e.g. '60TiB' or '61440GiB'.")
-    return parsed
+    return _prompt_capacity(skippable=False)
 
 
 def resolve_credentials(args):
@@ -632,6 +710,11 @@ def main():
     # Resolve (and, if needed, prompt for) the frozen-tier capacity up front, so the
     # interactive prompt is answered before the potentially long scan begins.
     frozen_capacity = resolve_frozen_capacity(args.frozen_tier_capacity)
+    # If a reclaimable (incremental) size is being computed but no capacity was supplied,
+    # offer the reclaimable-% report by prompting for the capacity (skippable, TTY only).
+    if (frozen_capacity is None and args.frozen_tier_capacity is None
+            and args.incremental and sys.stdin.isatty()):
+        frozen_capacity = _prompt_capacity(skippable=True)
 
     url, api_key = resolve_credentials(args)
     if not url:
@@ -680,11 +763,14 @@ def main():
         ilm_index = analyze_ilm_policies(es)
         report["offending_ilm_policies"] = offending_from_index(ilm_index)
         sys.stderr.write(f"  offending ILM policies: {len(report['offending_ilm_policies'])}\n")
+        # Write a ready-to-apply corrected policy for each offender.
+        write_corrected_policies(args.cluster or "cluster", ilm_index)
 
     if not orphans:
         if args.ilm_review_file and ilm_index is not None:
             write_ilm_review_file(args.ilm_review_file, args,
-                                  formerly_leaking_policies([], ilm_index, None))
+                                  formerly_leaking_policies([], ilm_index, None),
+                                  report.get("offending_ilm_policies", []))
         if args.audit_file:
             write_audit_file(args.audit_file, args, report, [], None)
         if args.json:
@@ -777,11 +863,12 @@ def main():
                 p["orphan_bytes"] = a["bytes"]
                 p["orphan_human"] = human(a["bytes"])
 
-    # Optional: log formerly-leaking-but-now-compliant ILM policies to a review file.
+    # Optional: log offending + formerly-leaking ILM policies to a review file.
     if args.ilm_review_file and ilm_index is not None:
         review = formerly_leaking_policies(orphans, ilm_index, per)
         report["formerly_leaking_ilm_policies"] = review
-        write_ilm_review_file(args.ilm_review_file, args, review)
+        write_ilm_review_file(args.ilm_review_file, args, review,
+                              report.get("offending_ilm_policies", []))
 
     # Optional: delete the orphans.
     if args.apply:
@@ -938,16 +1025,8 @@ def write_audit_file(path, args, report, orphans, per):
     w("")
 
     if args.check_ilm:
-        off = report.get("offending_ilm_policies", [])
-        w("OFFENDING ILM POLICIES (create searchable snapshots ILM will not delete)")
-        if not off:
-            w("  None.")
-        for p in off:
-            phases = ",".join(p["searchable_snapshot_phases"])
-            w(f"  - {p['policy']}  (searchable_snapshot in: {phases}); {p['reason']}")
-            if "orphan_count" in p:
-                extra = f"  ({p['orphan_human']})" if "orphan_human" in p else ""
-                w(f"      orphans from this policy: {p['orphan_count']}{extra}")
+        for line in render_offending_lines(report.get("offending_ilm_policies", [])):
+            w(line)
         w("")
 
     w("NOTES")
@@ -991,8 +1070,26 @@ def write_audit_file(path, args, report, orphans, per):
         sys.stderr.write(f"WARNING: could not write audit file '{path}': {e}\n")
 
 
-def write_ilm_review_file(path, args, review):
-    """Write the formerly-leaking-but-now-compliant ILM policy report to a text file."""
+def render_offending_lines(offending):
+    """Return the OFFENDING-ILM-POLICIES section as a list of text lines (shared by the
+    audit file and the ILM review file)."""
+    lines = ["OFFENDING ILM POLICIES (create searchable snapshots ILM will not delete)"]
+    if not offending:
+        lines.append("  None.")
+        return lines
+    for p in offending:
+        phases = ",".join(p["searchable_snapshot_phases"])
+        lines.append(f"  - {p['policy']}  (searchable_snapshot in: {phases}); {p['reason']}")
+        if "orphan_count" in p:
+            extra = f"  ({p['orphan_human']})" if "orphan_human" in p else ""
+            lines.append(f"      orphans from this policy: {p['orphan_count']}{extra}")
+    return lines
+
+
+def write_ilm_review_file(path, args, review, offending):
+    """Write the ILM policy review to a text file: the CURRENTLY-offending policies (that
+    will create new orphans) plus the formerly-leaking-but-now-compliant policies -- so all
+    potentially-offending ILM policies are reviewable in one place."""
     L = []
     def w(s=""):
         L.append(s)
@@ -1006,11 +1103,20 @@ def write_ilm_review_file(path, args, review):
         return sz, dates
 
     w("=" * 70)
-    w("ILM POLICIES THAT APPEAR TO HAVE LEAKED SEARCHABLE SNAPSHOTS")
-    w("(currently compliant -- delete_searchable_snapshot is NOT disabled)")
+    w("ILM POLICY REVIEW -- SEARCHABLE SNAPSHOT LEAKS")
     w("=" * 70)
     w(f"Generated (UTC) : {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
     w(f"Cluster         : {args.cluster or '(from --es-url / ES_URL)'}")
+    w("")
+    w("SECTION 1 -- CURRENTLY misconfigured policies that will create NEW orphans")
+    w("(no delete phase, or delete_searchable_snapshot: false):")
+    w("")
+    for line in render_offending_lines(offending):
+        w(line)
+    w("")
+    w("-" * 70)
+    w("SECTION 2 -- policies compliant NOW that appear to have leaked in the PAST")
+    w("-" * 70)
     w("")
     w("A policy is listed here if it currently HAS a delete phase with")
     w("delete_searchable_snapshot enabled, yet orphaned searchable snapshots exist whose")
