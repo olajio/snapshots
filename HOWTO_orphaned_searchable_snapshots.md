@@ -194,6 +194,7 @@ at the cost of the slower `_status` scan.
 | `--timeout N` | `120` | Per-request read timeout in seconds |
 | `--retries N` | `3` | Retries with backoff on read timeouts / `429` / `5xx` |
 | `--per-snapshot` | off | Print the largest **25** orphans with their size (implies `--report-size`; use `--json` for all) |
+| `--audit-file PATH` | — | Write the **full** orphan list + summary/analysis to a text file (screen still shows top 25) |
 | `--json` | off | Emit machine-readable JSON instead of text |
 | `--insecure` | off | Skip TLS verification (not recommended) |
 | `-h`, `--help` | — | Show help and exit |
@@ -229,6 +230,17 @@ array) — handy for piping into a spreadsheet.
 # on a big repo, pair with a smaller batch and larger timeout
 ./orphaned_searchable_snapshots.py --cluster qa --incremental --batch 20 --timeout 300
 ```
+
+**Keep an audit record — top 25 on screen, full list to a file:**
+```bash
+./orphaned_searchable_snapshots.py --cluster dev --report-size --check-ilm \
+  --audit-file dev_orphans_audit.txt
+```
+The audit file contains a header (timestamp, cluster, repo, mode), a summary (total /
+in-use / SLM-excluded / orphan counts and sizes), the offending ILM policies, explanatory
+notes, and **every** orphan with its size (largest first). Combine with `--incremental`
+to record each snapshot's reclaimable size too. Independent of shell redirection, so you
+still see the top 25 live while the complete list is saved.
 
 **Scan for orphans AND flag the ILM policies causing future ones:**
 ```bash

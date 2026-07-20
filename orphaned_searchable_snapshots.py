@@ -93,6 +93,8 @@ Options
   --retries N       Retries with backoff on read timeouts / 429 / 5xx (default 3)
   --per-snapshot    Print the largest 25 orphans with their size (implies --report-size;
                     use --json for the full per-snapshot list).
+  --audit-file PATH Write the FULL orphan list plus summary/analysis to a text file (the
+                    on-screen output still shows only the top 25). For audit records.
   --json            Emit the report as JSON instead of text
   --insecure        Skip TLS verification (not recommended)
 
@@ -457,6 +459,9 @@ def main():
     ap.add_argument("--per-snapshot", action="store_true",
                     help="Print the largest 25 orphans with their size (implies "
                          "--report-size; use --json for the full list).")
+    ap.add_argument("--audit-file", metavar="PATH",
+                    help="Write the FULL orphan list plus summary and analysis to this text "
+                         "file (the on-screen output still shows only the top 25).")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--insecure", action="store_true")
     args = ap.parse_args()
@@ -497,6 +502,8 @@ def main():
     report = {
         "repo": args.repo,
         "pattern": args.pattern,
+        "total_snapshots": len(all_snaps),
+        "in_use": len(in_use),
         "slm_managed_excluded": len(slm_managed),
         "orphan_count": len(orphans),
         "applied": bool(args.apply),
@@ -510,6 +517,8 @@ def main():
         sys.stderr.write(f"  offending ILM policies: {len(offending)}\n")
 
     if not orphans:
+        if args.audit_file:
+            write_audit_file(args.audit_file, args, report, [], None)
         if args.json:
             print(json.dumps(report, indent=2))
         else:
@@ -562,6 +571,10 @@ def main():
     if args.apply:
         sys.stderr.write(f"Deleting {len(orphans)} orphan(s) (batch<= {args.batch})...\n")
         report["deleted"] = delete_snapshots(es, args.repo, orphans, args.batch)
+
+    # Optional: write the FULL orphan list + analysis to an audit file.
+    if args.audit_file:
+        write_audit_file(args.audit_file, args, report, orphans, per)
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -640,6 +653,90 @@ def print_ilm_section(args, report):
         print(f"  total orphaned storage attributable to these policies: {human(attributed_bytes)}")
     print("  Fix: add a delete phase with delete_searchable_snapshot: true (its default),")
     print("  or set it to true where it is currently false.")
+
+
+def write_audit_file(path, args, report, orphans, per):
+    """Write the FULL orphan list plus a summary/analysis to a text file for auditing.
+    Unlike the on-screen output (top 25), this lists EVERY orphan."""
+    L = []
+    def w(s=""):
+        L.append(s)
+
+    w("=" * 70)
+    w("ORPHANED SEARCHABLE SNAPSHOT AUDIT")
+    w("=" * 70)
+    w(f"Generated (UTC) : {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+    w(f"Cluster         : {args.cluster or '(from --es-url / ES_URL)'}")
+    w(f"Repository      : {report['repo']}")
+    w(f"Name pattern    : {report['pattern']}")
+    w(f"Mode            : {'APPLY (snapshots deleted)' if args.apply else 'DRY-RUN (nothing deleted)'}")
+    w("")
+    w("SUMMARY")
+    w(f"  total snapshots in repo : {report.get('total_snapshots', '?')}")
+    w(f"  in-use (mounted)        : {report.get('in_use', '?')}")
+    w(f"  SLM-managed (excluded)  : {report.get('slm_managed_excluded', 0)}")
+    w(f"  orphaned snapshots      : {report['orphan_count']}")
+    if "total_bytes" in report:
+        w(f"  total (logical)         : {report['total_human']}  ({report['total_bytes']} bytes)")
+        if "incremental_bytes" in report:
+            w(f"  incremental (reclaim)   : {report['incremental_human']}  ({report['incremental_bytes']} bytes)")
+        w(f"  size method             : {report.get('size_method')}")
+    if "deleted" in report:
+        w(f"  deleted                 : {report['deleted']}")
+    w("")
+
+    if args.check_ilm:
+        off = report.get("offending_ilm_policies", [])
+        w("OFFENDING ILM POLICIES (create searchable snapshots ILM will not delete)")
+        if not off:
+            w("  None.")
+        for p in off:
+            phases = ",".join(p["searchable_snapshot_phases"])
+            w(f"  - {p['policy']}  (searchable_snapshot in: {phases}); {p['reason']}")
+            if "orphan_count" in p:
+                extra = f"  ({p['orphan_human']})" if "orphan_human" in p else ""
+                w(f"      orphans from this policy: {p['orphan_count']}{extra}")
+        w("")
+
+    w("NOTES")
+    w("  - Orphan = in repo, not referenced by any mounted index, and NOT SLM-managed")
+    w("    (SLM-managed snapshots are retired by SLM's own retention).")
+    w("  - 'total (logical)' sums each snapshot's index sizes and OVERCOUNTS blobs shared")
+    w("    between snapshots -- treat it as an upper bound.")
+    w("  - 'incremental (reclaim)' (only with --incremental) is the dedup-aware estimate of")
+    w("    space freed on deletion; actual freed can be lower when blobs are shared with")
+    w("    retained (in-use or SLM) snapshots. The exact figure is the object-store bucket")
+    w("    size before vs. after.")
+    w("")
+
+    if per:
+        rows = sorted(orphans, key=lambda n: per.get(n, {}).get("total", 0), reverse=True)
+        has_incr = any("incremental" in per.get(n, {}) for n in orphans)
+        w(f"FULL ORPHAN LIST ({len(orphans)}) -- largest first:")
+        head = f"  {'total':>12}"
+        if has_incr:
+            head += f"  {'incremental':>12}"
+        head += "  snapshot"
+        w(head)
+        for n in rows:
+            v = per.get(n, {})
+            line = f"  {human(v.get('total', 0)):>12}"
+            if has_incr:
+                line += f"  {human(v.get('incremental', 0)):>12}"
+            line += f"  {n}"
+            w(line)
+    else:
+        w(f"FULL ORPHAN LIST ({len(orphans)}):")
+        for n in sorted(orphans):
+            w(f"  {n}")
+    w("")
+
+    try:
+        with open(path, "w") as fh:
+            fh.write("\n".join(L) + "\n")
+        sys.stderr.write(f"Audit file written: {path} ({len(orphans)} orphan(s))\n")
+    except OSError as e:
+        sys.stderr.write(f"WARNING: could not write audit file '{path}': {e}\n")
 
 
 if __name__ == "__main__":

@@ -69,6 +69,8 @@ environment variables instead.
 - **SLM-aware** — excludes SLM-managed snapshots from the orphan set.
 - **Safe deletion** (`--apply`) — dry-run by default; requests are batched under the ES HTTP
   request-line limit and retry with backoff on timeouts / `429` / `5xx`.
+- **Audit records** (`--audit-file PATH`) — writes the full orphan list plus summary and
+  analysis to a text file while the screen still shows only the top 25.
 
 ## Required API-key privileges
 
