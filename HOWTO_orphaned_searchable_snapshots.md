@@ -281,17 +281,35 @@ When prompted, enter a value like `60` then the unit (`TiB`/`GiB`, default `TiB`
 `60TiB` directly. Sizes are binary (1 TiB = 1024⁴ bytes). In a piped/non-interactive run you
 must pass the value inline — the prompt needs a TTY.
 
+You'll also be **prompted automatically** whenever you run with **`--incremental` but without
+`--frozen-tier-capacity`** (since the reclaimable figure is available) — press **Enter to
+skip** if you don't want the reclaimable-% report on that run.
+
 **Log policies that leaked in the past but look compliant now (and flag re-offenders):**
 ```bash
 ./orphaned_searchable_snapshots.py --cluster dev --report-size \
   --ilm-review-file dev_ilm_review.txt
 ```
-This finds ILM policies that **currently** have `delete_searchable_snapshot` enabled yet
-still have orphaned snapshots attributed to them — i.e. they leaked before being fixed. The
-file lists each with its **last-updated date**, orphan count/size, and orphan date range.
-Any policy with an orphan **taken after** its last update is flagged **NEEDS REVIEW**
-(it may still be leaking, or its index was deleted outside ILM). `--ilm-review-file`
-implies `--check-ilm`; add `--report-size` to include orphan sizes.
+The review file has **two sections**:
+- **Section 1 — currently offending policies** (no delete phase, or
+  `delete_searchable_snapshot: false`): the same "OFFENDING ILM POLICIES" list that also
+  appears in the `--audit-file`, so all potentially-offending policies are reviewable here.
+- **Section 2 — formerly leaking, compliant now**: policies that have
+  `delete_searchable_snapshot` enabled yet still have orphans attributed to them (they
+  leaked before being fixed), each with its **last-updated date**, orphan count/size, and
+  orphan date range. Any policy with an orphan **taken after** its last update is flagged
+  **NEEDS REVIEW** (it may still be leaking, or its index was deleted outside ILM).
+
+`--ilm-review-file` implies `--check-ilm`; add `--report-size` to include orphan sizes.
+
+### Auto-generated corrected policies
+
+Whenever `--check-ilm` runs, the tool also writes a **ready-to-apply `PUT _ilm/policy`
+body** for every currently-offending policy to
+`corrected_ilm_policies/<cluster>/<policy>.json` — e.g. `corrected_ilm_policies/dev/test.json`.
+It flips `delete_searchable_snapshot: false` → `true`, or adds a delete phase
+(`delete_searchable_snapshot: true`, with a **placeholder `min_age` of `365d` to review**)
+when the policy has none. Apply with `PUT _ilm/policy/<policy>` using the file as the body.
 The audit file contains a header (timestamp, cluster, repo, mode), a summary (total /
 in-use / SLM-excluded / orphan counts and sizes), the offending ILM policies, explanatory
 notes, and **every** orphan with its size (largest first). Combine with `--incremental`
