@@ -195,7 +195,7 @@ a piped/non-interactive run there's no prompt; pass the value inline instead.)
   --incremental --check-ilm --report-size \
   --frozen-tier-capacity 60TiB \
   --ilm-review-file dev_ilm_review.txt \
-  --audit-file dev_orphans_audit.txt 2>&1 | tee dev_run.log
+  --audit-file dev_orphans_audit.txt
 
 # ---- credentials without --cluster ----
 ./orphaned_searchable_snapshots.py --es-url https://host:9243 --api-key "$KEY" --report-size
