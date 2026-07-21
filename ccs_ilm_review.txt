@@ -1,0 +1,31 @@
+======================================================================
+ILM POLICY REVIEW -- SEARCHABLE SNAPSHOT LEAKS
+======================================================================
+Generated (UTC) : 2026-07-21T03:42:10Z
+Cluster         : ccs
+
+SECTION 1 -- CURRENTLY misconfigured policies that will create NEW orphans
+(no delete phase, or delete_searchable_snapshot: false):
+
+OFFENDING ILM POLICIES (create searchable snapshots ILM will not delete)
+  None.
+
+----------------------------------------------------------------------
+SECTION 2 -- policies compliant NOW that appear to have leaked in the PAST
+----------------------------------------------------------------------
+
+A policy is listed here if it currently HAS a delete phase with
+delete_searchable_snapshot enabled, yet orphaned searchable snapshots exist whose
+name embeds this policy -- i.e. it leaked in the past but looks compliant now
+(likely updated after the leak).
+
+'NEEDS REVIEW' = at least one leaked snapshot was TAKEN (snapshot date) AFTER the
+policy's last update, so it may still be leaking, or the index was deleted outside
+ILM. Those should be reviewed by a human.
+
+NEEDS REVIEW -- leaked AFTER last update (0):
+  (none)
+
+LIKELY ALREADY FIXED -- all leaked snapshots predate last update (0):
+  (none)
+

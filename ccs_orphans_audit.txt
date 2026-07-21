@@ -1,0 +1,30 @@
+======================================================================
+ORPHANED SEARCHABLE SNAPSHOT AUDIT
+======================================================================
+Generated (UTC) : 2026-07-21T03:42:10Z
+Cluster         : ccs
+Repository      : found-snapshots
+Name pattern    : *
+Mode            : DRY-RUN (nothing deleted)
+
+SUMMARY
+  total snapshots in repo : 101
+  in-use (mounted)        : 0
+  SLM-managed (excluded)  : 101
+  orphaned snapshots      : 0
+
+OFFENDING ILM POLICIES (create searchable snapshots ILM will not delete)
+  None.
+
+NOTES
+  - Orphan = in repo, not referenced by any mounted index, and NOT SLM-managed
+    (SLM-managed snapshots are retired by SLM's own retention).
+  - 'total (logical)' sums each snapshot's index sizes and OVERCOUNTS blobs shared
+    between snapshots -- treat it as an upper bound.
+  - 'incremental (reclaim)' (only with --incremental) is the dedup-aware estimate of
+    space freed on deletion; actual freed can be lower when blobs are shared with
+    retained (in-use or SLM) snapshots. The exact figure is the object-store bucket
+    size before vs. after.
+
+FULL ORPHAN LIST (0):
+

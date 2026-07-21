@@ -1,0 +1,271 @@
+======================================================================
+ORPHANED SEARCHABLE SNAPSHOT AUDIT
+======================================================================
+Generated (UTC) : 2026-07-21T03:33:29Z
+Cluster         : dev
+Repository      : found-snapshots
+Name pattern    : *
+Mode            : DRY-RUN (nothing deleted)
+
+SUMMARY
+  total snapshots in repo : 508
+  in-use (mounted)        : 177
+  SLM-managed (excluded)  : 100
+  orphaned snapshots      : 231
+  total (logical)         : 3.30 TiB  (3630693483608 bytes)
+  incremental (reclaim)   : 638.77 GiB  (685878075301 bytes)
+  size method             : status
+
+RECLAIMABLE vs FROZEN-TIER OBJECT-STORE STORAGE
+  frozen-tier object-store storage : 2.77 TiB  (provided)
+  reclaimable (incremental) orphans: 638.77 GiB
+  reclaimable is 22.52% of total frozen-tier object-store storage
+
+OFFENDING ILM POLICIES (create searchable snapshots ILM will not delete)
+  - solarwinds-test  (searchable_snapshot in: frozen); no delete phase -> ILM never deletes the searchable snapshot
+      orphans from this policy: 0  (0 B)
+
+NOTES
+  - Orphan = in repo, not referenced by any mounted index, and NOT SLM-managed
+    (SLM-managed snapshots are retired by SLM's own retention).
+  - 'total (logical)' sums each snapshot's index sizes and OVERCOUNTS blobs shared
+    between snapshots -- treat it as an upper bound.
+  - 'incremental (reclaim)' (only with --incremental) is the dedup-aware estimate of
+    space freed on deletion; actual freed can be lower when blobs are shared with
+    retained (in-use or SLM) snapshots. The exact figure is the object-store bucket
+    size before vs. after.
+
+FULL ORPHAN LIST (231) -- largest first:
+         total   incremental  snapshot
+     40.95 GiB         403 B  2024.08.21-metricbeat-7.17.9-2024.08.15-000094-metricbeat-7.17.9-qxiufpxmszyg8xkl2cfp1q
+     40.85 GiB         414 B  2024.10.31-.ds-metricbeat-8.11.0-mt-rnd-2024.10.28-000330-metricbeat-8.11.0-mt-rnd-njz3xgburpu1bpmaqa1dfa
+     40.81 GiB         414 B  2024.08.07-.ds-metricbeat-8.11.0-mt-rnd-2024.08.03-000237-metricbeat-8.11.0-mt-rnd-iklm2mkwqfu0ri898bxyng
+     40.77 GiB         412 B  2023.09.23-.ds-metricbeat-8.8.1-mt-rnd-2023.09.17-000027-metricbeat-8.8.1-mt-rnd-ypbzpvnntngqb5ocwizqbg
+     40.71 GiB         403 B  2024.09.06-.ds-metricbeat-8.11.0-mt-rnd-2024.09.01-000268-metricbeat-8.11.0-mt-rnd-5fni0knoqyylymvcthj__q
+     40.71 GiB         414 B  2024.09.12-.ds-metricbeat-8.11.0-mt-rnd-2024.09.08-000273-metricbeat-8.11.0-mt-rnd-wkln159wttg0nltne-onyw
+     40.64 GiB         412 B  2023.10.03-.ds-metricbeat-8.8.1-mt-rnd-2023.09.27-000033-metricbeat-8.8.1-mt-rnd-3lur0bgoqoczaagj1t6-6q
+     40.61 GiB         414 B  2024.08.10-.ds-metricbeat-8.11.0-mt-rnd-2024.08.06-000240-metricbeat-8.11.0-mt-rnd-lnf7rkw4sjwny9qnezak3w
+     40.61 GiB         414 B  2024.11.05-.ds-metricbeat-8.11.0-mt-rnd-2024.11.02-000335-metricbeat-8.11.0-mt-rnd-en308gcarlyvsxip-ibkcq
+     40.59 GiB         403 B  2024.02.26-.ds-metricbeat-8.11.0-mt-rnd-2024.02.21-000086-metricbeat-8.11.0-mt-rnd-sqv-bmg2soysbnuupy2fww
+     40.53 GiB         403 B  2024.07.03-.ds-metricbeat-8.11.0-mt-rnd-2024.06.29-000198-metricbeat-8.11.0-mt-rnd-jixeucegteqbppxta6p0og
+     40.52 GiB         414 B  2024.08.13-.ds-metricbeat-8.11.0-mt-rnd-2024.08.09-000243-metricbeat-8.11.0-mt-rnd-zbpk1vinrgayvdoyie-kqg
+     40.49 GiB         411 B  2024.11.05-.ds-filebeat-8.11.0-mt-rnd-2024.11.01-000337-filebeat-8.11.0-mt-rnd-jxkkgie5tt-qzupp6vjpxa
+     40.47 GiB         403 B  2024.07.05-.ds-metricbeat-8.11.0-mt-rnd-2024.07.02-000201-metricbeat-8.11.0-mt-rnd-svgpwodfsw2gjopa5o2ryq
+     40.39 GiB         414 B  2024.12.21-.ds-metricbeat-8.11.0-mt-rnd-2024.12.17-000390-metricbeat-8.11.0-mt-rnd-5zkd1xqrrsyp_fmx922q3g
+     40.36 GiB         414 B  2024.12.23-.ds-metricbeat-8.11.0-mt-rnd-2024.12.20-000393-metricbeat-8.11.0-mt-rnd-icgtkutbtqikzg8tszmjig
+     40.29 GiB         411 B  2024.11.03-.ds-filebeat-8.11.0-mt-rnd-2024.10.30-000334-filebeat-8.11.0-mt-rnd-lvzq6eyhtyoorf61qsqizg
+     40.28 GiB         403 B  2024.12.18-.ds-metricbeat-8.11.0-mt-rnd-2024.12.15-000387-metricbeat-8.11.0-mt-rnd-s5h_miuyr0-_6g4krv5aag
+     40.24 GiB         411 B  2024.12.20-.ds-filebeat-8.11.0-mt-rnd-2024.12.16-000411-filebeat-8.11.0-mt-rnd-myjb6tajrdq1ih3oz1zjjg
+     40.23 GiB         414 B  2024.11.03-.ds-metricbeat-8.11.0-mt-rnd-2024.10.30-000332-metricbeat-8.11.0-mt-rnd-uxhcg-uusxartpgzifwfcq
+     40.19 GiB         401 B  2023.09.28-.ds-metricbeat-8.8.1-mt-rnd-2023.09.22-000030-metricbeat-8.8.1-mt-rnd-ojhijqggqmez8kswmm7yxa
+     40.04 GiB         411 B  2024.12.22-.ds-filebeat-8.11.0-mt-rnd-2024.12.18-000416-filebeat-8.11.0-mt-rnd-xmfbv0g9s--hocames-ohq
+     30.70 GiB         411 B  2024.09.09-.ds-filebeat-8.11.0-mt-rnd-2024.09.02-000268-filebeat-8.11.0-mt-rnd-sbpjqg8orrooxnol6ld4la
+     30.43 GiB         403 B  2024.12.17-filebeat-scripts-2024.12.06-000057-filebeat-scripts-5ldzsl4etwmvrjokrz3jnw
+     30.35 GiB     30.35 GiB  2024.07.03-filebeat-scripts-2024.06.23-000043-filebeat-scripts-c9fijmrqqnes4psfqrwm7g
+     30.28 GiB         403 B  2024.08.03-filebeat-scripts-2024.07.23-000046-filebeat-scripts-d4i7hchiq5sloa-ljmt_xq
+     30.25 GiB     30.25 GiB  2024.08.13-filebeat-scripts-2024.08.02-000047-filebeat-scripts-1e_frvesrkydxogxa7zy3a
+     30.24 GiB     30.24 GiB  2024.09.02-filebeat-scripts-2024.08.23-000049-filebeat-scripts-oqz33ji_tim1gsrxlhazbg
+     30.18 GiB     30.18 GiB  2024.08.23-filebeat-scripts-2024.08.12-000048-filebeat-scripts-6nr2krp-qwo8rqdrzuq-jw
+     30.12 GiB     30.12 GiB  2024.10.26-filebeat-scripts-2024.10.15-000054-filebeat-scripts-gqetpnqvrl-ydcdfp_8f-w
+     29.62 GiB         411 B  2024.08.15-.ds-filebeat-8.11.0-mt-rnd-2024.08.08-000253-filebeat-8.11.0-mt-rnd-qqhihxazrb6niudkaa34mg
+     29.29 GiB         411 B  2024.08.10-.ds-filebeat-8.11.0-mt-rnd-2024.08.03-000250-filebeat-8.11.0-mt-rnd-li3xhj4mtperjts4vh5-vq
+     27.67 GiB         400 B  2024.08.11-metricbeat-7.17.9-2024.08.05-000092-metricbeat-7.17.9-ik2ccp3lrskpgncee-0eza
+     25.10 GiB     25.10 GiB  2025.12.05-.ds-traces-apm.rum-default-2025.11.11-000084-traces-apm.rum_traces-default_policy-cafbpcchtr2jptdbyqr6ba
+     25.08 GiB     25.08 GiB  2026.01.27-.ds-traces-apm.rum-default-2026.01.04-000091-traces-apm.rum_traces-default_policy-kpxuq7twql2mdcm1cphfqa
+     25.03 GiB     25.03 GiB  2025.11.10-.ds-traces-apm.rum-default-2025.10.14-000078-traces-apm.rum_traces-default_policy-_5zierpmqw63baxut2r9da
+     22.09 GiB     22.09 GiB  2026.01.04-.ds-traces-apm.rum-default-2025.12.05-000088-traces-apm.rum_traces-default_policy-izgzt9lort-1ilob6lsnxw
+     21.28 GiB           0 B  2024.08.23-.ds-traces-apm-default-2024.08.22-001724-apm-rollover-30-days-kc-1dguis0ipqpsazzyeeg
+     21.21 GiB         397 B  2024.12.19-.ds-traces-apm-default-2024.12.18-003089-apm-rollover-30-days-mhio1qnssmwkwbccfwganq
+     21.19 GiB         408 B  2024.07.02-.ds-traces-apm-default-2024.07.01-001128-apm-rollover-30-days-igexpvbaqlguvljlaef0ka
+     21.16 GiB         408 B  2024.09.07-.ds-traces-apm-default-2024.09.06-001904-apm-rollover-30-days-4bc1gv9xsiwrqjnfzn717w
+     21.16 GiB         408 B  2024.07.03-.ds-traces-apm-default-2024.07.02-001138-apm-rollover-30-days-evb3ewtjsug1dxhextokyq
+     21.14 GiB         396 B  2024.12.20-.ds-traces-apm-default-2024.12.19-003101-apm-rollover-30-days-4co4bljcs5-uaa09meyjqq
+     21.08 GiB         397 B  2024.12.21-.ds-traces-apm-default-2024.12.20-003116-apm-rollover-30-days-hewotmddq4yjnsv-1sbafg
+     21.07 GiB         397 B  2024.07.02-.ds-traces-apm-default-2024.06.30-001122-apm-rollover-30-days-yhu1yczispq_vd8bwd2gpq
+     21.05 GiB         408 B  2024.08.10-.ds-traces-apm-default-2024.08.09-001559-apm-rollover-30-days-otakazyprw-ku3kblpomaq
+     21.04 GiB         408 B  2024.07.06-.ds-traces-apm-default-2024.07.05-001180-apm-rollover-30-days-gpijtyx1ruiw4bdaqwacjg
+     21.03 GiB         396 B  2024.12.21-.ds-traces-apm-default-2024.12.20-003122-apm-rollover-30-days-sdhnueairnmlyiuaqrxzqq
+     21.03 GiB         408 B  2024.09.11-.ds-traces-apm-default-2024.09.10-001945-apm-rollover-30-days-drivxwlwrtwc5epe47stbw
+     21.03 GiB         408 B  2024.09.07-.ds-traces-apm-default-2024.09.05-001902-apm-rollover-30-days-oszcr9s1qe69u3kxpy_fuw
+     21.02 GiB         396 B  2024.12.21-.ds-traces-apm-default-2024.12.20-003113-apm-rollover-30-days--ggfh0jxt96kg1sidjnpqg
+     20.98 GiB         408 B  2024.07.06-.ds-traces-apm-default-2024.07.05-001186-apm-rollover-30-days-crex1lonrtoo8tzu0njpgq
+     20.97 GiB         408 B  2024.08.09-.ds-traces-apm-default-2024.08.08-001539-apm-rollover-30-days-4q5icgtwrfavaiwvudjm4a
+     20.93 GiB         408 B  2024.08.23-.ds-traces-apm-default-2024.08.22-001726-apm-rollover-30-days-hgckxhoysnswkgq2ud9iwq
+     20.91 GiB         408 B  2024.09.06-.ds-traces-apm-default-2024.09.05-001892-apm-rollover-30-days-rhf_kkqdraqqr5nx-uqvuq
+     20.89 GiB           0 B  2024.08.23-.ds-traces-apm-default-2024.08.22-001722-apm-rollover-30-days-o9svxxhhrpo6tqdd35jprg
+     20.87 GiB         408 B  2024.09.06-.ds-traces-apm-default-2024.09.05-001896-apm-rollover-30-days-d4tw-e3sqywcmjx9qx5nla
+     20.87 GiB         408 B  2024.08.08-.ds-traces-apm-default-2024.08.07-001531-apm-rollover-30-days-yquli5clr2mbryqml7hstq
+     20.87 GiB     20.87 GiB  2024.08.07-.ds-traces-apm-default-2024.08.06-001514-apm-rollover-30-days-hzxsff78rw2hi3rnr7ytaq
+     20.87 GiB         408 B  2024.12.20-.ds-traces-apm-default-2024.12.19-003095-apm-rollover-30-days-l_l0__lvteepsjp-kq4gvw
+     20.84 GiB         408 B  2024.09.07-.ds-traces-apm-default-2024.09.06-001910-apm-rollover-30-days-atxabnatqs-vao-6pxfcoa
+     20.84 GiB     20.84 GiB  2024.08.07-.ds-traces-apm-default-2024.08.06-001516-apm-rollover-30-days-ug2vx0l0stew6dc4o4ieug
+     20.84 GiB         408 B  2024.09.10-.ds-traces-apm-default-2024.09.08-001932-apm-rollover-30-days-hgw2zpdttb2hhfyhm-diew
+     20.82 GiB     20.82 GiB  2024.08.07-.ds-traces-apm-default-2024.08.06-001511-apm-rollover-30-days-q9ahfmcrsl6mrpxw2uw4bq
+     20.82 GiB         408 B  2024.08.16-.ds-traces-apm-default-2024.08.15-001626-apm-rollover-30-days-nlqfrlvatqulbcyqp73iwa
+     20.79 GiB         408 B  2024.11.01-.ds-traces-apm-default-2024.10.31-002553-apm-rollover-30-days-rdncmeaotjslfqixf3o2iw
+     20.79 GiB         408 B  2024.12.18-.ds-traces-apm-default-2024.12.17-003064-apm-rollover-30-days-hffgntm3qmy4_1vo8prncq
+     20.78 GiB         408 B  2024.08.16-.ds-traces-apm-default-2024.08.15-001634-apm-rollover-30-days-thhlcusrq720qmepuh9j5a
+     20.77 GiB         407 B  2024.07.02-.ds-traces-apm-default-2024.07.01-001126-apm-rollover-30-days-nd4efljjt4k4rwx1nuirwa
+     20.76 GiB         408 B  2024.08.10-.ds-traces-apm-default-2024.08.09-001562-apm-rollover-30-days-dqmgbcbwqsu2m5o1t9-dgw
+     20.74 GiB           0 B  2024.11.02-.ds-traces-apm-default-2024.11.01-002566-apm-rollover-30-days-2pm0-k4zsyoc5l5irpofzg
+     20.73 GiB         408 B  2024.11.05-.ds-traces-apm-default-2024.11.04-002597-apm-rollover-30-days-5i_sksios56sk12_vksdja
+     20.72 GiB         408 B  2024.11.02-.ds-traces-apm-default-2024.11.01-002571-apm-rollover-30-days-cjsvu-kvqzuanl_lprwfsa
+     20.72 GiB         397 B  2024.12.21-.ds-traces-apm-default-2024.12.19-003110-apm-rollover-30-days-r8qxrnzyrdw__wh0k5ywdw
+     20.69 GiB         409 B  2024.11.05-.ds-traces-apm-default-2024.11.03-002586-apm-rollover-30-days-qgkbxnzbtraopyez83ldwq
+     20.68 GiB         408 B  2024.12.20-.ds-traces-apm-default-2024.12.19-003098-apm-rollover-30-days-856g5s0yqta_kmk2tg405a
+     20.68 GiB         408 B  2024.07.02-.ds-traces-apm-default-2024.07.01-001130-apm-rollover-30-days-7o7vk7lns6yipxsqi3ygea
+     20.62 GiB         408 B  2024.12.19-.ds-traces-apm-default-2024.12.18-003087-apm-rollover-30-days-bvfwqotwsg-g-hfitjqgew
+     20.60 GiB         408 B  2024.12.18-.ds-traces-apm-default-2024.12.17-003067-apm-rollover-30-days-cm9gpl59tkeu1_xaw6lora
+     20.60 GiB         408 B  2024.11.01-.ds-traces-apm-default-2024.10.31-002559-apm-rollover-30-days-3fwldti7tb6i5p5pw_ae7q
+     20.60 GiB     20.60 GiB  2024.08.07-.ds-traces-apm-default-2024.08.05-001509-apm-rollover-30-days-ewzruf2rtq-w5sxxudfk4q
+     20.57 GiB           0 B  2024.12.19-.ds-traces-apm-default-2024.12.18-003084-apm-rollover-30-days-iomdypuotw-3jygunrblfw
+     20.56 GiB           0 B  2024.12.21-.ds-traces-apm-default-2024.12.20-003119-apm-rollover-30-days-ca4f1_carxahipg7fa9ddg
+     20.56 GiB         408 B  2024.11.01-.ds-traces-apm-default-2024.10.30-002547-apm-rollover-30-days-ax68qrrwqiwhv-ca6_twmg
+     20.52 GiB         396 B  2024.12.18-.ds-traces-apm-default-2024.12.17-003072-apm-rollover-30-days-hbw4jckerh62s4ko2dc9qg
+     20.48 GiB         408 B  2024.08.16-.ds-traces-apm-default-2024.08.14-001623-apm-rollover-30-days-bzmqm5uptbgwh1mfiwr5rw
+     20.48 GiB         408 B  2024.12.18-.ds-traces-apm-default-2024.12.16-003061-apm-rollover-30-days-clnmkdyysfu-pctatxxubg
+     20.47 GiB           0 B  2024.11.03-.ds-traces-apm-default-2024.11.01-002577-apm-rollover-30-days-del4z3pirm2nrjtctikwtw
+     20.47 GiB           0 B  2024.12.20-.ds-traces-apm-default-2024.12.19-003106-apm-rollover-30-days-1hhcsp-7sqmy4o7m2_nwxq
+     20.45 GiB         408 B  2024.12.19-.ds-traces-apm-default-2024.12.17-003081-apm-rollover-30-days-rv9g6z3ttrqcksi7guumqg
+     20.42 GiB     20.42 GiB  2026.02.04-.ds-traces-apm-default-2026.02.04-004103-apm-rollover-30-days-j55h8c0freov4dciwwea0a
+     20.41 GiB         408 B  2024.12.17-.ds-traces-apm-default-2024.12.16-003059-apm-rollover-30-days-5fihe4bvqog2_ys4nkhqja
+     20.40 GiB     20.40 GiB  2026.01.29-.ds-traces-apm-default-2026.01.28-004082-apm-rollover-30-days-cjt-exoysouznt2pe2d9ug
+     20.39 GiB         408 B  2024.11.05-.ds-traces-apm-default-2024.11.04-002591-apm-rollover-30-days-xqdo2wbaqvyxhnitcxanea
+     20.35 GiB     20.35 GiB  2026.01.30-.ds-traces-apm-default-2026.01.29-004088-apm-rollover-30-days-o_6fl2ayqsgsr7z9uscmbg
+     20.34 GiB         408 B  2024.12.22-.ds-traces-apm-default-2024.12.20-003128-apm-rollover-30-days--watfiigreir8tct0g1mdw
+     20.34 GiB         408 B  2024.10.31-.ds-traces-apm-default-2024.10.30-002534-apm-rollover-30-days-xvogspmbsyeyciz-egbelg
+     20.34 GiB         408 B  2024.11.03-.ds-traces-apm-default-2024.11.01-002580-apm-rollover-30-days-njcb4qstsfkm4u9c0ozacg
+     20.33 GiB         408 B  2024.12.22-.ds-traces-apm-default-2024.12.21-003130-apm-rollover-30-days-9b7oqhokqpw00cmdplj8sa
+     20.33 GiB         408 B  2024.08.24-.ds-traces-apm-default-2024.08.22-001728-apm-rollover-30-days-qhupcfsntqsrat-tpjbjna
+     20.30 GiB     20.30 GiB  2026.01.26-.ds-traces-apm-default-2026.01.26-004070-apm-rollover-30-days-39_22bhcqkkcb3ebypj2gw
+     20.28 GiB         408 B  2024.12.21-.ds-traces-apm-default-2024.12.20-003125-apm-rollover-30-days-onbzodtwttcsoqvn0lvibg
+     20.28 GiB         408 B  2024.11.01-.ds-traces-apm-default-2024.10.31-002556-apm-rollover-30-days-rl7ops9kqqk_yia104opsa
+     20.27 GiB     20.27 GiB  2026.01.23-.ds-traces-apm-default-2026.01.22-004060-apm-rollover-30-days-ylgykrvatcapyfrhmsndwa
+     20.27 GiB         408 B  2024.11.05-.ds-traces-apm-default-2024.11.04-002594-apm-rollover-30-days-qtsfiwt2rwy5o0sjn7r5zw
+     20.26 GiB         408 B  2024.08.17-.ds-traces-apm-default-2024.08.15-001636-apm-rollover-30-days-xwcev4vcqi-n_pg2criqvg
+     20.26 GiB         397 B  2024.12.20-.ds-traces-apm-default-2024.12.19-003109-apm-rollover-30-days-lgqsevueskmjjho2co-5pq
+     20.26 GiB         397 B  2024.12.20-.ds-traces-apm-default-2024.12.18-003094-apm-rollover-30-days-zru1epzoqekfrnzv7scbxq
+     20.26 GiB     20.26 GiB  2026.01.28-.ds-traces-apm-default-2026.01.27-004076-apm-rollover-30-days-zjd7f9q5qoq5o7puel5kow
+     20.25 GiB         408 B  2024.10.31-.ds-traces-apm-default-2024.10.30-002544-apm-rollover-30-days-vqgt6fhssck9zuevu-ij6q
+     20.24 GiB         408 B  2024.12.19-.ds-traces-apm-default-2024.12.18-003092-apm-rollover-30-days-e7ol3fkntlwzblavxitfpa
+     20.24 GiB     20.24 GiB  2026.01.28-.ds-traces-apm-default-2026.01.28-004079-apm-rollover-30-days-04lap9m7tqo-zmfvyjgpng
+     20.21 GiB         408 B  2024.08.23-.ds-traces-apm-default-2024.08.21-001718-apm-rollover-30-days-2wn8lsmxrueum3c5_qazfg
+     20.21 GiB     20.21 GiB  2026.01.29-.ds-traces-apm-default-2026.01.29-004085-apm-rollover-30-days-z7yzrcy8rwk0p8bfbig2sa
+     20.21 GiB         408 B  2024.10.31-.ds-traces-apm-default-2024.10.30-002541-apm-rollover-30-days-v89ubcgetusbus0qy6mmrq
+     20.21 GiB         399 B  2026.01.26-.ds-traces-apm-default-2026.01.23-004067-apm-rollover-30-days-etew2mcqtcyjz59ixrev5g
+     20.20 GiB         408 B  2024.10.31-.ds-traces-apm-default-2024.10.30-002536-apm-rollover-30-days-zgskpc_grssduqk3kzlmrg
+     20.20 GiB         397 B  2024.08.23-.ds-traces-apm-default-2024.08.22-001720-apm-rollover-30-days-tiyhnftbtqkzjpcbz8dfza
+     20.18 GiB         408 B  2024.11.01-.ds-traces-apm-default-2024.10.31-002551-apm-rollover-30-days-_qbh85bvtfwek7sp7othmg
+     20.17 GiB         408 B  2024.08.16-.ds-traces-apm-default-2024.08.15-001629-apm-rollover-30-days-tgzif4wtr2s_rsiuojyjfg
+     20.16 GiB     20.16 GiB  2026.02.03-.ds-traces-apm-default-2026.02.02-004097-apm-rollover-30-days-bdytgswits22jqyvqot3cw
+     20.15 GiB         408 B  2024.11.02-.ds-traces-apm-default-2024.10.31-002563-apm-rollover-30-days-5embb_4gqzwx8r3oc5bkqg
+     20.14 GiB     20.14 GiB  2024.03.03-.ds-traces-apm-default-2024.03.01-000453-apm-rollover-30-days-7alcawjvrf-dp8kg_oaxoa
+     20.13 GiB     20.13 GiB  2026.01.27-.ds-traces-apm-default-2026.01.26-004073-apm-rollover-30-days-oy3y3meaqks00lxccyzaxg
+     20.12 GiB     20.12 GiB  2026.01.21-.ds-traces-apm-default-2026.01.21-004055-apm-rollover-30-days-zbjm84vntl2cdgjkqpjeig
+     20.12 GiB         408 B  2024.11.02-.ds-traces-apm-default-2024.11.01-002574-apm-rollover-30-days-rw-n9nyzqzeu0kvr381wka
+     20.12 GiB         408 B  2024.08.15-.ds-traces-apm-default-2024.08.14-001621-apm-rollover-30-days-kfakxw1cshepuwfjzjbvqg
+     20.11 GiB         408 B  2024.08.16-.ds-traces-apm-default-2024.08.15-001631-apm-rollover-30-days-9u9c2_bdrpq7ja_cnvqxrw
+     20.11 GiB         408 B  2024.08.11-.ds-traces-apm-default-2024.08.10-001568-apm-rollover-30-days-3x_6grszrigmjhn4c-5g4q
+     20.09 GiB         408 B  2024.08.11-.ds-traces-apm-default-2024.08.09-001565-apm-rollover-30-days-0mypnhggqpisqetu2v_uig
+     20.07 GiB           0 B  2024.11.02-.ds-traces-apm-default-2024.11.01-002568-apm-rollover-30-days-t5zliqhyr8c8-qspymwctw
+     20.07 GiB    714.72 KiB  2026.02.04-.ds-traces-apm-default-2026.02.02-004094-apm-rollover-30-days-zdbgwicurrwq7jzmprzqya
+     20.07 GiB         398 B  2026.02.03-.ds-traces-apm-default-2026.02.02-004094-apm-rollover-30-days-mqmoa51arboysu59yfyqnw
+     20.06 GiB         408 B  2024.10.31-.ds-traces-apm-default-2024.10.29-002532-apm-rollover-30-days-knr-opfgq7o023hisyd6wg
+     20.05 GiB     20.05 GiB  2026.02.04-.ds-traces-apm-default-2026.02.03-004100-apm-rollover-30-days-4mispkgvq2wxv_iasuvvrq
+     20.04 GiB     20.04 GiB  2026.01.23-.ds-traces-apm-default-2026.01.23-004063-apm-rollover-30-days-znc9xao8r8sbfjj3zm9fsw
+      8.55 GiB      8.55 GiB  2023.03.21-apm-7.17.5-transaction-000007-apm-rollover-30-days-uyegn55urlqx94wd99b23g
+      7.00 GiB      7.00 GiB  2023.03.21-apm-7.17.5-metric-000007-apm-rollover-30-days-r-mi43w1rwyqq20aayc9dq
+      2.24 GiB         397 B  2024.02.28-metricbeat-7.17.9-2024.02.22-000059-metricbeat-7.17.9-sw1esbxctvqz-ytvzn-wsq
+      2.04 GiB         400 B  2024.12.21-metricbeat-7.17.9-2024.12.15-000003-metricbeat-7.17.9-gk2uyv41tsi3f9-o1zb2gq
+      1.88 GiB      1.88 GiB  2025.11.11-.ds-traces-apm.rum-default-2025.11.10-000081-traces-apm.rum_traces-default_policy-v_6me6-6rmqwr-tyi5yq0q
+      1.52 GiB      1.52 GiB  2023.03.21-apm-7.17.5-span-000007-apm-rollover-30-days-gr8lqmjrsq-umhf0eaiihq
+    819.33 MiB    819.33 MiB  2026.07.19-.ds-metrics-apm.transaction.60m-default-2026.06.19-000112-metrics-apm.transaction_60m_metrics-default_policy-6o5qdppvse6-pdt9mnf_8g
+    811.17 MiB    811.17 MiB  2026.07.13-.ds-metrics-apm.transaction.10m-default-2026.06.29-000203-metrics-apm.transaction_10m_metrics-default_policy-mufrvscks32fovd6vzt7qg
+    606.87 MiB    606.87 MiB  2026.03.21-metricbeat-logstash-2026.03.16-01-metricbeat-logstash-ynossandrbuljhhhrfvycw
+    584.32 MiB    584.32 MiB  2026.06.19-.ds-metrics-apm.transaction.60m-default-2026.05.20-000108-metrics-apm.transaction_60m_metrics-default_policy-jkeqwe36tmebnrs1fu2ccq
+    556.12 MiB         397 B  2024.08.21-filebeat-7.17.9-2024.08.15-000066-filebeat-7.17.9-e5e4dmdetb-wd3tm1vk_yq
+    338.20 MiB         408 B  2024.02.28-filebeat-7.17.9-2024.02.22-000031-filebeat-7.17.9-gr6gjiccq8wimnel1xfwpw
+    337.76 MiB    337.76 MiB  2023.03.21-apm-7.17.5-error-000007-apm-rollover-30-days-nk2c7bgit2qhbncpyzknig
+    336.55 MiB         397 B  2024.12.16-filebeat-7.17.9-2024.12.10-000002-filebeat-7.17.9-betwp3u2t8gkjhivqlc8-w
+    319.52 MiB         397 B  2024.12.21-filebeat-7.17.9-2024.12.15-000003-filebeat-7.17.9-iub9kic3tqasyaxei231ng
+    252.97 MiB    252.97 MiB  2023.03.21-filebeat-forgerock-2023.03.17-000151-filebeat-forgerock-hfbccwdhtnmeh6spy1n1uq
+    249.63 MiB    249.63 MiB  2023.03.21-filebeat-forgerock-2023.03.18-000152-filebeat-forgerock-cujzlusqq5olg1bvmequ5a
+    247.50 MiB    247.50 MiB  2023.03.21-filebeat-forgerock-2023.03.15-000149-filebeat-forgerock-ekp5txqhrhc-et9tc-gqcg
+    243.41 MiB    243.41 MiB  2023.03.21-filebeat-forgerock-2023.03.14-000148-filebeat-forgerock-bqnf0hcctm2q5ejkgnsroq
+    228.53 MiB    228.53 MiB  2023.03.21-filebeat-forgerock-2023.03.16-000150-filebeat-forgerock-in4zejnvrvi55ngc42k9nq
+    202.48 MiB    202.48 MiB  2026.07.13-.ds-metrics-apm.service_transaction.10m-default-2026.06.29-000203-metrics-apm.service_transaction_10m_metrics-default_policy-tpxgopqzs7yccz7nuovvng
+    158.09 MiB    158.09 MiB  2026.07.13-.ds-metrics-apm.service_destination.10m-default-2026.06.29-000202-metrics-apm.service_destination_10m_metrics-default_policy-z6hchi57tmigk3vyzfdgma
+    128.60 MiB    128.60 MiB  2026.06.29-.ds-metrics-apm.service_destination.10m-default-2026.06.15-000199-metrics-apm.service_destination_10m_metrics-default_policy-sfxqeiljrx6pxmh58ulwow
+    115.96 MiB    115.96 MiB  2026.07.19-.ds-metrics-apm.service_transaction.60m-default-2026.06.19-000112-metrics-apm.service_transaction_60m_metrics-default_policy-dhqpnmbtrmi88zrrj1xv3a
+    101.21 MiB    101.21 MiB  2026.06.19-.ds-metrics-apm.service_transaction.60m-default-2026.05.20-000108-metrics-apm.service_transaction_60m_metrics-default_policy-jgsqy2cwsre8mq6avwz5ya
+     81.73 MiB     81.73 MiB  2026.06.19-.ds-metrics-apm.service_destination.60m-default-2026.05.20-000108-metrics-apm.service_destination_60m_metrics-default_policy-6_e9nk_hste61xrcfhe31q
+     78.08 MiB     78.08 MiB  2026.07.19-.ds-metrics-apm.service_destination.60m-default-2026.06.19-000112-metrics-apm.service_destination_60m_metrics-default_policy-hbsboxqerkawqlnm7bh9kq
+     46.37 MiB         391 B  2024.12.21-metricbeat-7.17.9-mt-sql-2024.12.15-000118-metricbeat-7.17.9-mt-sql-jmwnhluit4eoipprdc7oha
+     33.64 MiB         390 B  2024.12.16-metricbeat-7.17.9-mt-sql-2024.12.10-000117-metricbeat-7.17.9-mt-sql-weaohapiqjcy78phw6pkxa
+     23.09 MiB         405 B  2024.12.22-filebeat-7.17.9-mt-rnd-2024.11.21-000032-filebeat-7.17.9-mt-rnd-0u5h7of4qgamczk7ir7lsw
+     13.80 MiB     13.80 MiB  2025.11.11-.ds-traces-apm.rum-default-2025.11.11-000083-traces-apm.rum_traces-default_policy-xmruoqqoregwfrw5e3capw
+      8.83 MiB      8.83 MiB  2026.07.13-.ds-metrics-apm.service_summary.10m-default-2026.06.29-000203-metrics-apm.service_summary_10m_metrics-default_policy-galvxtqeqfii2rddeq860q
+      3.12 MiB      3.12 MiB  2026.07.19-.ds-metrics-apm.service_summary.60m-default-2026.06.19-000112-metrics-apm.service_summary_60m_metrics-default_policy-5sj_o9ept-q2uda5nf4zpa
+      2.85 MiB      2.85 MiB  2026.06.19-.ds-metrics-apm.service_summary.60m-default-2026.05.20-000108-metrics-apm.service_summary_60m_metrics-default_policy-rpcrbpaxtry-uwa0nbkmpg
+      1.51 MiB           0 B  2024.10.20-prometheus-alerts-2024.09.19-000002-prometheus-alerts-7pivdrxvqk2x1qwdmcpiag
+    381.88 KiB    381.88 KiB  2026.06.03-.ds-.logs-elasticsearch.deprecation-default-2026.04.20-000001-.deprecation-indexing-ilm-policy-3sz1hkqrr_un4ztgxjtsqa
+     15.55 KiB     15.55 KiB  2026.05.13-.ds-.logs-deprecation.elasticsearch-default-2026.03.30-000259-.deprecation-indexing-ilm-policy-dldra1lftee-jrezb6ibiq
+     14.87 KiB     14.87 KiB  2026.06.17-.ds-.logs-elasticsearch.deprecation-default-2026.05.04-000002-.deprecation-indexing-ilm-policy-sgjdkrnwsqusfaos7-bxha
+      4.91 KiB      4.91 KiB  2024.07.02-test_index-000002-test_policy-l39c6-bjtcucbcqkxhegwa
+      4.90 KiB           0 B  2024.07.03-test_index-000003-test_policy-mchvpi96qhg2xvf9lacnkw
+      4.86 KiB      4.86 KiB  2024.07.02-test_index-000001-test_policy-p3o3swe-rz2n2srdynrwvq
+      4.63 KiB      4.63 KiB  2024.07.02-.ds-test_datastream_index_1-2024.07.02-000001-test_policy-d23x414uqoe2nxsion41hg
+      4.42 KiB      4.42 KiB  2024.07.02-.ds-test_datastream_index_1-2024.07.02-000002-test_policy-yq3a7epasoi5qocdd7zbmg
+         226 B           0 B  2023.03.21-apm-7.13.4-error-000019-apm-rollover-30-days-jm0kdxw6sfsljdmdiouo-w
+         226 B           0 B  2023.03.21-apm-7.13.4-metric-000019-apm-rollover-30-days-wc4xmp5iru6k4e7rhucwca
+         226 B           0 B  2023.03.21-apm-7.13.4-profile-000019-apm-rollover-30-days-tzwwml0ctmw4ltrrn3v-qw
+         226 B           0 B  2023.03.21-apm-7.13.4-span-000019-apm-rollover-30-days-4kguaxj1t0ybg4lsbutkva
+         226 B           0 B  2023.03.21-apm-7.13.4-transaction-000019-apm-rollover-30-days-r-r5owv4rkyibghsu64dya
+         226 B           0 B  2023.03.21-apm-7.14.2-error-000017-apm-rollover-30-days-lxjci4p9stkysq5lnzybxw
+         226 B           0 B  2023.03.21-apm-7.14.2-metric-000017-apm-rollover-30-days-ol5lenjkste8mmssjou1oq
+         226 B           0 B  2023.03.21-apm-7.14.2-profile-000017-apm-rollover-30-days-7kqvuq_9ruwi6n0xjitm6g
+         226 B           0 B  2023.03.21-apm-7.14.2-span-000017-apm-rollover-30-days-2cypdjsyqyqskgjuzcr66g
+         226 B           0 B  2023.03.21-apm-7.14.2-transaction-000017-apm-rollover-30-days-vst654gtsge0n2z3rufa7w
+         226 B           0 B  2023.03.21-apm-7.15.2-error-000015-apm-rollover-30-days-j5_anzesrawisuoc8b9dew
+         226 B           0 B  2023.03.21-apm-7.15.2-metric-000015-apm-rollover-30-days-z4ss2mz4ti6gtt_7al-p3w
+         226 B           0 B  2023.03.21-apm-7.15.2-profile-000015-apm-rollover-30-days-fptsbpf3qzmy5dsqft3y4g
+         226 B           0 B  2023.03.21-apm-7.15.2-span-000015-apm-rollover-30-days-lj9xpvwhrxwznxvdwlbl1w
+         226 B           0 B  2023.03.21-apm-7.15.2-transaction-000015-apm-rollover-30-days-3qpe-6w-teu0_rn6mjgrfg
+         226 B           0 B  2023.03.21-apm-7.16.3-metric-000014-apm-rollover-30-days-dih8ghgbqk6asbpvs55iua
+         226 B           0 B  2023.03.21-apm-7.16.3-profile-000014-apm-rollover-30-days-2m2z0_kgtu2mtnjegfjjda
+         226 B           0 B  2023.03.21-apm-7.16.3-transaction-000019-apm-rollover-30-days-w75bulqqsl-n8bbbyvq5za
+         226 B           0 B  2023.03.21-apm-7.17.5-profile-000007-apm-rollover-30-days-cyxh-jaiqhepykrwcnnc3w
+         226 B           0 B  2023.03.21-filebeat-7.17.5-2023.03.02-000015-filebeat-7.17.5-uresd4d5r4q_f0bn9jx22a
+         226 B           0 B  2023.03.21-hazeltree-logs-2023.03.12-000073-hazeltree-logs-ar0otpstq0qomsksz8-nfq
+         226 B           0 B  2023.04.27-metricbeat-7.6.2-dev-2023.03.28-000034-metricbeat-dev-c1paal-ysgsw-4xkpyjzwq
+         226 B           0 B  2023.05.08-filebeat-forgerock-2023.05.07-000202-filebeat-forgerock-l1f3r9ris_wgn6nuiqt9jw
+         226 B           0 B  2023.05.09-filebeat-forgerock-2023.05.08-000203-filebeat-forgerock-i2t56zvot7gii5-xj0czhq
+         226 B           0 B  2023.05.10-filebeat-forgerock-2023.05.09-000204-filebeat-forgerock-2itetfv8sbe_1rgrkodjrw
+         226 B           0 B  2023.05.10-heartbeat-7.12.0-2023.04.10-000025-heartbeat-7.12.0-bl2ts5zdsoaw4iejpr0f6q
+         226 B           0 B  2023.05.11-filebeat-forgerock-2023.05.10-000205-filebeat-forgerock-hdm5g7ysrj-35hqao74apq
+         226 B           0 B  2023.05.11-metricbeat-7.17.9-2023.05.05-000001-metricbeat-7.17.9-da3q0n8brnyety5y-edqrw
+         226 B           0 B  2023.05.12-filebeat-forgerock-2023.05.11-000206-filebeat-forgerock-wrvtx-o8soon0pqpess2ga
+         226 B           0 B  2023.05.13-filebeat-forgerock-2023.05.12-000207-filebeat-forgerock-g4cnam9as9m1j5nxlqv8ba
+         226 B           0 B  2023.05.13-metricbeat_mssql-7.8.1-dev-2023.05.12-000635-metricbeat_mssql-7.8.1-dev-qi6-suaot0slifbcvkytia
+         226 B           0 B  2023.05.14-filebeat-forgerock-2023.05.13-000208-filebeat-forgerock-mfxur9ogqsonl8mydxqazw
+         226 B           0 B  2023.05.14-metricbeat_mssql-7.8.1-dev-2023.05.13-000636-metricbeat_mssql-7.8.1-dev-oxix20yur4e0ngqrjnqtya
+         226 B           0 B  2023.05.15-apm-7.17.5-error-000009-apm-rollover-30-days-ep238epdr0kojwd6ez_epw
+         226 B           0 B  2023.05.15-apm-7.17.5-metric-000009-apm-rollover-30-days-fqltltbct4ejoxqidspstg
+         226 B           0 B  2023.05.15-apm-7.17.5-profile-000009-apm-rollover-30-days-4qkjj2cvr1e68m5eawymhw
+         226 B           0 B  2023.05.15-apm-7.17.5-span-000009-apm-rollover-30-days-gnagtc-msusd8ezol6ud2q
+         226 B           0 B  2023.05.15-apm-7.17.5-transaction-000009-apm-rollover-30-days-yhkefjotrxoja4m4f5s6tw
+         226 B           0 B  2023.05.15-filebeat-forgerock-2023.05.14-000209-filebeat-forgerock-vhlujj9lq5saewli1mkyaa
+         226 B           0 B  2023.05.15-metricbeat_mssql-7.8.1-dev-2023.05.14-000637-metricbeat_mssql-7.8.1-dev-sqsnjv1atigwzen48ndf9a
+         226 B           0 B  2023.05.16-filebeat-forgerock-2023.05.15-000210-filebeat-forgerock-wkhwf7tvsjimnmafwku04a
+         226 B           0 B  2023.05.16-metricbeat_mssql-7.8.1-dev-2023.05.15-000638-metricbeat_mssql-7.8.1-dev-en5tfjxssyepm7kawrcl8g
+         226 B           0 B  2023.05.17-filebeat-forgerock-2023.05.16-000211-filebeat-forgerock-sr1ixkndtuyqfx70zayrjq
+         226 B           0 B  2023.05.17-metricbeat-7.10.1-mt-rnd-2023.04.16-000074-metricbeat-mt-rnd-jbvnj9bgtm6trhehecwdhg
+         226 B           0 B  2023.05.17-metricbeat_mssql-7.8.1-dev-2023.05.16-000639-metricbeat_mssql-7.8.1-dev-mstqpgwztiwdimrlpzjpbq
+         226 B           0 B  2023.05.18-filebeat-7.10.1-mt-rnd-2023.04.18-000047-filebeat-mt-rnd-g9cbaoe8sian2rldiykl4w
+         226 B           0 B  2023.05.18-filebeat-forgerock-2023.05.17-000212-filebeat-forgerock-x8wb92gftj6k3kobf_peta
+         226 B           0 B  2023.05.18-metricbeat_mssql-7.8.1-dev-2023.05.17-000640-metricbeat_mssql-7.8.1-dev-zwvhynovtximivlzkdef3a
+         226 B           0 B  2023.05.19-filebeat-forgerock-2023.05.18-000213-filebeat-forgerock--te6xoyotiinj9rlsdemwa
+         226 B           0 B  2023.05.19-metricbeat_mssql-7.8.1-dev-2023.05.18-000641-metricbeat_mssql-7.8.1-dev--wnbuev1tfwjl1qecwezqq
+         226 B           0 B  2023.05.20-filebeat-forgerock-2023.05.19-000214-filebeat-forgerock-9eotfrhyqfewtjwr77pmaq
+         226 B           0 B  2023.05.21-filebeat-forgerock-2023.05.20-000215-filebeat-forgerock-15blg-ugs2cbkwn9qzilow
+
